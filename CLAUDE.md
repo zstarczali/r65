@@ -75,9 +75,9 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → p
 ## Builds and releases
 
 `.github/workflows/build.yml` builds Windows, macOS and Linux on x64 and arm64,
-and packages `.zip` or `.tar.gz` files; there is no MSI. It runs on pushes to `main`
-and `development`, and a pushed `v*` tag also publishes a GitHub release. It builds
-with `--locked`, so commit `Cargo.lock` whenever dependencies change. macOS x64 is
+and packages `.zip` or `.tar.gz` files; there is no MSI. It only runs when started
+by hand (`workflow_dispatch`), and a run started on a `v*` tag also publishes a
+GitHub release. It builds with `--locked`, so commit `Cargo.lock` whenever dependencies change. macOS x64 is
 cross compiled and is the only target without a smoke test.
 
 ## Code style
