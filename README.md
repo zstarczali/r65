@@ -24,12 +24,12 @@ You need a [Rust toolchain](https://rustup.rs) that supports the 2024 edition.
 cargo build --release
 ```
 
-The program is written to `target/release/rust65` (`rust65.exe` on Windows).
+The program is written to `target/release/r65` (`r65.exe` on Windows).
 
 ## Usage
 
 ```bash
-rust65 game.asm
+r65 game.asm
 ```
 
 This writes `game.prg` next to the source. The exit code is 0 on success and 1 on
@@ -50,18 +50,18 @@ Some common options:
 | `-execute <cmd>` | Run a program with the output file after a successful build |
 | `--gui [file]` | Open the editor window |
 
-Default options can be kept in a `rust65.cfg` file next to the program.
+Default options can be kept in a `r65.cfg` file next to the program.
 
 ## Help
 
 The built-in help covers all options and the language:
 
 ```bash
-rust65 --help
+r65 --help
 ```
 
 ```bash
-rust65 --help directives
+r65 --help directives
 ```
 
 The topics are `options`, `syntax`, `directives`, `preprocessor`, `functions`,
@@ -87,7 +87,7 @@ start:
 ```
 
 ```bash
-rust65 border.asm -showmem
+r65 border.asm -showmem
 ```
 
 ## Limitations
@@ -96,7 +96,7 @@ rust65 border.asm -showmem
 - Progressive or subsampled JPEG pictures may differ slightly from the original.
 - There are no automated tests yet.
 
-Run `rust65 --help limits` for the current list.
+Run `r65 --help limits` for the current list.
 
 ## Documentation
 

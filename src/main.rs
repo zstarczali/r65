@@ -1,6 +1,6 @@
 //! R65: a KickAssembler compatible 6502/C64 command line cross assembler.
 //!
-//! `rust65 program.asm -showmem -vicesymbols` assembles on the command line.
+//! `r65 program.asm -showmem -vicesymbols` assembles on the command line.
 //! Without a source file it says so and exits with code 1, like the original.
 //! `--gui [file]` opens the optional editor window, `--screenshot <png>` grabs it.
 
@@ -22,11 +22,11 @@ mod value;
 
 use std::path::PathBuf;
 
-/// extra options from rust65.cfg next to the program (one option per line)
+/// extra options from r65.cfg next to the program (one option per line)
 fn cfg_args() -> Vec<String> {
     let Ok(exe) = std::env::current_exe() else { return vec![] };
     let Some(dir) = exe.parent() else { return vec![] };
-    let Ok(text) = std::fs::read_to_string(dir.join("rust65.cfg")) else { return vec![] };
+    let Ok(text) = std::fs::read_to_string(dir.join("r65.cfg")) else { return vec![] };
     text.lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"))

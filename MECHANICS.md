@@ -35,7 +35,7 @@ the value (for example `SegmentManager.<clinit> @0004 sipush 8192`).
 
 ## Command line
 
-Like the original, this is a command line tool: `rust65 file.asm [options]`.
+Like the original, this is a command line tool: `r65 file.asm [options]`.
 Without a source file it prints the banner and "Error: No input file given."
 and exits with code 1 (the original also exits with 1). The editor window is
 optional and only opens with `--gui [file]` or `--screenshot <png>`.

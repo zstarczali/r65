@@ -1,21 +1,21 @@
-//! The command line help: `rust65 --help [topic]`.
+//! The command line help: `r65 --help [topic]`.
 //! The option list itself lives in `driver::HELP`, next to the option parser.
 
 use crate::driver;
 
 const OVERVIEW: &str = "Usage:
-  rust65 <file.asm> [options]     assemble a source file
-  rust65 --gui [file.asm]         open the optional editor window
-  rust65 --help [topic]           show this help, or one topic
+  r65 <file.asm> [options]     assemble a source file
+  r65 --gui [file.asm]         open the optional editor window
+  r65 --help [topic]           show this help, or one topic
 
 Quick start:
-  rust65 game.asm                 writes game.prg next to the source
-  rust65 game.asm -showmem -vicesymbols -bytedump
-  rust65 game.asm -o out.prg -odir build -define DEBUG
+  r65 game.asm                 writes game.prg next to the source
+  r65 game.asm -showmem -vicesymbols -bytedump
+  r65 game.asm -o out.prg -odir build -define DEBUG
 
 Exit code: 0 on success, 1 on any error.
 
-Help topics (rust65 --help <topic>):
+Help topics (r65 --help <topic>):
   options       every command line option
   syntax        labels, numbers, operators, addressing modes
   directives    all .directives
@@ -27,7 +27,7 @@ Help topics (rust65 --help <topic>):
   encodings     .text character encodings
   cpu           supported CPUs and opcode sets
   output        which files are written and what they contain
-  config        the rust65.cfg file
+  config        the r65.cfg file
   examples      a complete sample program
   limits        what isn't supported
   all           everything above";
@@ -348,17 +348,17 @@ after a successful build, for example: -execute x64sc";
 
 const CONFIG: &str = "CONFIG FILE
 
-rust65.cfg next to the rust65 program holds default options, one or more per
+r65.cfg next to the r65 program holds default options, one or more per
 line. Lines starting with # or // are skipped. They are read before the command
 line, and aren't used in window mode.
 
-  # rust65.cfg
+  # r65.cfg
   -showmem
   -libdir C:\\c64\\lib";
 
 const EXAMPLES: &str = "EXAMPLE
 
-  // border.asm: rust65 border.asm -showmem
+  // border.asm: r65 border.asm -showmem
   BasicUpstart2(start)
 
   .const BORDER = $d020
@@ -386,11 +386,11 @@ const EXAMPLES: &str = "EXAMPLE
       .byte 0
 
 Command lines
-  rust65 border.asm                       assemble to border.prg
-  rust65 border.asm -odir build           write into the build folder
-  rust65 border.asm -define DEBUG         #if DEBUG becomes true
-  rust65 border.asm :level=3              cmdLineVars.get(\"level\") is \"3\"
-  rust65 border.asm -execute x64sc        start VICE after the build";
+  r65 border.asm                       assemble to border.prg
+  r65 border.asm -odir build           write into the build folder
+  r65 border.asm -define DEBUG         #if DEBUG becomes true
+  r65 border.asm :level=3              cmdLineVars.get(\"level\") is \"3\"
+  r65 border.asm -execute x64sc        start VICE after the build";
 
 const LIMITS: &str = "LIMITS
 
