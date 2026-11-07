@@ -396,24 +396,9 @@ pub fn help_title() -> String {
     format!("{} \u{2013} {} v{}\n{}", APP_NAME, DESCRIPTION, VERSION, COPYRIGHT)
 }
 
-/// The start-up text: name, description, version and copyright, centred in 54 columns.
-pub fn banner_lines() -> Vec<String> {
-    let line = format!("//{}", "-".repeat(54));
-    let mut out = vec![line.clone(), line.clone()];
-    let texts = [format!("{} - {}", APP_NAME, DESCRIPTION), format!("Version {}", VERSION), COPYRIGHT.to_string()];
-    for t in &texts {
-        let pad = 54usize.saturating_sub(t.len());
-        out.push(format!("//{}{}{}", " ".repeat(pad / 2), t, " ".repeat(pad - pad / 2)));
-    }
-    out.push(line.clone());
-    out.push(line);
-    out
-}
-
+/// The start-up line: name, description, version and copyright.
 fn banner(log: &Log) {
-    for l in banner_lines() {
-        log.say(&l);
-    }
+    log.say(&format!("{} \u{2013} {} v{} {}", APP_NAME, DESCRIPTION, VERSION, COPYRIGHT));
 }
 
 fn info_entry(asm: &Asm, e: &AsmError) -> (usize, u32, u32, u32, String) {

@@ -5,9 +5,9 @@ use common::Project;
 #[test]
 fn banner_names_the_program_and_version() {
     let b = Project::new().asm("nop", &["-nooutput"]);
-    assert!(b.out.contains("R65 - KickAssembler compatible compiler for C64"), "{}", b.out);
-    assert!(b.out.contains(&format!("Version {}", env!("CARGO_PKG_VERSION"))), "{}", b.out);
-    assert!(b.out.contains("(C) 2026 Zsolt Tarczali"), "{}", b.out);
+    let line = format!("R65 \u{2013} KickAssembler compatible compiler for C64 v{} (C) 2026 Zsolt Tarczali", env!("CARGO_PKG_VERSION"));
+    assert_eq!(b.out.lines().next(), Some(line.as_str()), "{}", b.out);
+    assert!(!b.out.contains("//---"), "{}", b.out);
 }
 
 #[test]
