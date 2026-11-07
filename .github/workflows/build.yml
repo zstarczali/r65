@@ -1,0 +1,116 @@
+# Builds r65 for Windows, macOS and Linux on x64 and arm64.
+# Every run keeps the packages as workflow artifacts. A pushed v* tag also
+# publishes them as a GitHub release.
+name: Build
+
+on:
+  push:
+    branches: [main, development]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            smoke: true
+          - name: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            smoke: true
+          - name: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            smoke: true
+          # Cross compiled on the arm64 Mac, so it can't be run there.
+          - name: macos-x64
+            runner: macos-latest
+            target: x86_64-apple-darwin
+            smoke: false
+          - name: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            smoke: true
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            smoke: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          R65="$PWD/target/${{ matrix.target }}/release/r65"
+          "$R65" --help
+          mkdir smoke
+          cd smoke
+          printf 'BasicUpstart2(start)\n* = $0810 "Main"\nstart:\n    lda #2\n    sta $d020\n    rts\n' > smoke.asm
+          "$R65" smoke.asm -showmem
+          # BASIC line from $0801 to $080c, a gap to $0810, 6 bytes of code, 2 bytes of load address
+          test "$(wc -c < smoke.prg)" -eq 23
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path target/${{ matrix.target }}/release/r65.exe, README.md -DestinationPath dist/r65-${{ matrix.name }}.zip
+
+      - name: Package (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir dist
+          tar -czf dist/r65-${{ matrix.name }}.tar.gz -C target/${{ matrix.target }}/release r65 -C "$PWD" README.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: r65-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "R65 $GITHUB_REF_NAME" --generate-notes

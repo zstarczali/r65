@@ -68,6 +68,17 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → p
   `help.rs`.
 - The version comes from `Cargo.toml`. The name and copyright are constants at the
   top of `driver.rs`.
+- The icon sources are the two SVGs in `assets/`. After changing one, run
+  `python assets/make_icons.py` to rebuild `r65.ico` (embedded in the Windows exe
+  by `build.rs`) and `r65-icon-256.png` (the window icon, included in `gui.rs`).
+
+## Builds and releases
+
+`.github/workflows/build.yml` builds Windows, macOS and Linux on x64 and arm64,
+and packages `.zip` or `.tar.gz` files; there is no MSI. It runs on pushes to `main`
+and `development`, and a pushed `v*` tag also publishes a GitHub release. It builds
+with `--locked`, so commit `Cargo.lock` whenever dependencies change. macOS x64 is
+cross compiled and is the only target without a smoke test.
 
 ## Code style
 

@@ -501,10 +501,18 @@ impl eframe::App for App {
     }
 }
 
+/// The icon of the window's title bar and the taskbar.
+fn window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../assets/r65-icon-256.png")).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData { rgba: img.into_raw(), width, height })
+}
+
 pub fn run(file: Option<PathBuf>, shot: Option<PathBuf>) -> Result<(), String> {
-    let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([700.0, 400.0]).with_title(APP_NAME),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([700.0, 400.0]).with_title(APP_NAME);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+    let opts = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(APP_NAME, opts, Box::new(move |cc| Ok(Box::new(App::new(cc, file, shot))))).map_err(|e| e.to_string())
 }
