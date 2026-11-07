@@ -26,6 +26,27 @@ cargo build --release
 
 The program is written to `target/release/r65` (`r65.exe` on Windows).
 
+On Debian or Ubuntu, first install the window system libraries:
+
+```bash
+sudo apt-get install libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+```
+
+## Automated builds
+
+GitHub Actions builds `.zip` packages for Windows and `.tar.gz` packages for macOS
+and Linux, each for x64 and arm64. Every push to `main` or `development` keeps
+them as workflow artifacts. Pushing a `v*` tag also publishes them as a GitHub
+release:
+
+```bash
+git tag v1.0.0
+```
+
+```bash
+git push origin v1.0.0
+```
+
 ## Usage
 
 ```bash
