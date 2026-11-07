@@ -1,0 +1,401 @@
+{
+  "version": 1,
+  "values": [
+    {
+      "name": "default_block_start",
+      "group": "memory",
+      "value": 8192,
+      "unit": "address",
+      "source": "SegmentManager.<clinit>()V @0004 sipush 8192 (new ConstantStartResolver(8192, null))"
+    },
+    {
+      "name": "basic_start",
+      "group": "memory",
+      "value": 2049,
+      "unit": "address",
+      "source": "BasicUpstartSegmentModifier.createUpstart @0016 sipush 2049; include/autoinclude.asm BasicUpstart2 (* = $0801)"
+    },
+    {
+      "name": "basic_end_block",
+      "group": "memory",
+      "value": 2062,
+      "unit": "address",
+      "source": "include/autoinclude.asm BasicUpstart2 (* = $080e \"Basic End\")"
+    },
+    {
+      "name": "basic_line_number",
+      "group": "memory",
+      "value": 10,
+      "source": "BasicUpstartSegmentModifier.createUpstart (bipush 10 line number)"
+    },
+    {
+      "name": "basic_sys_token",
+      "group": "memory",
+      "value": 158,
+      "source": "BasicUpstartSegmentModifier.createUpstart (bipush -98 = $9e SYS token)"
+    },
+    {
+      "name": "default_fill_byte",
+      "group": "memory",
+      "value": 0,
+      "source": "kickass.state.segments.Segment.flatten"
+    },
+    {
+      "name": "max_memory_address",
+      "group": "memory",
+      "value": 65535,
+      "unit": "address",
+      "source": "kickass.setup.configuration.parameters.KickAssemblerParameters.maxMemoryAddress (accepted, not enforced)"
+    },
+    {
+      "name": "default_cpu",
+      "group": "cpu",
+      "value": "_6502",
+      "source": "kickass._65xx.cpus.CPU_6502 (default, with illegal opcodes)"
+    },
+    {
+      "name": "zeropage_max",
+      "group": "cpu",
+      "value": 255,
+      "unit": "address",
+      "source": "_65xxMnemonicNode.resolveArgType @0037 sipush 255"
+    },
+    {
+      "name": "branch_min",
+      "group": "cpu",
+      "value": -128,
+      "unit": "bytes",
+      "source": "_65xxMnemonicNode (relative address is illegal message)"
+    },
+    {
+      "name": "branch_max",
+      "group": "cpu",
+      "value": 127,
+      "unit": "bytes",
+      "source": "_65xxMnemonicNode (relative address is illegal message)"
+    },
+    {
+      "name": "AT_NONE",
+      "group": "arguments",
+      "value": 0,
+      "source": "kickass constant table (AT_NONE)"
+    },
+    {
+      "name": "AT_IMMEDIATE",
+      "group": "arguments",
+      "value": 1,
+      "source": "kickass constant table (AT_IMMEDIATE)"
+    },
+    {
+      "name": "AT_ZEROPAGE",
+      "group": "arguments",
+      "value": 2,
+      "source": "kickass constant table (AT_ZEROPAGE)"
+    },
+    {
+      "name": "AT_IZEROPAGEX",
+      "group": "arguments",
+      "value": 5,
+      "source": "kickass constant table (AT_IZEROPAGEX)"
+    },
+    {
+      "name": "AT_IZEROPAGEY",
+      "group": "arguments",
+      "value": 6,
+      "source": "kickass constant table (AT_IZEROPAGEY)"
+    },
+    {
+      "name": "AT_ABSOLUTE",
+      "group": "arguments",
+      "value": -1,
+      "source": "kickass constant table (AT_ABSOLUTE)"
+    },
+    {
+      "name": "AT_ABSOLUTEX",
+      "group": "arguments",
+      "value": -2,
+      "source": "kickass constant table (AT_ABSOLUTEX)"
+    },
+    {
+      "name": "AT_ABSOLUTEY",
+      "group": "arguments",
+      "value": -3,
+      "source": "kickass constant table (AT_ABSOLUTEY)"
+    },
+    {
+      "name": "AT_INDIRECT",
+      "group": "arguments",
+      "value": -4,
+      "source": "kickass constant table (AT_INDIRECT)"
+    },
+    {
+      "name": "max_passes",
+      "group": "passes",
+      "value": 12,
+      "unit": "count",
+      "source": "Own safety cap. The original has none: KickAssembler.assemble @0402-046a repeats passes until the program is finished; if a pass makes no progress it runs one strict pass (setFailOnInvalidValue @044e) so the real error is reported (evidence ev_ca65c536)"
+    },
+    {
+      "name": "max_diagnostics_shown",
+      "group": "log",
+      "value": 5,
+      "unit": "count",
+      "source": "KickAssemblerParameters.showMaxNoOfDiagnostics"
+    },
+    {
+      "name": "error_context_lines",
+      "group": "log",
+      "value": 3,
+      "unit": "count",
+      "source": "StackTraceErrorPrinter.getMarkedErrorLine"
+    },
+    {
+      "name": "banner_width",
+      "group": "log",
+      "value": 54,
+      "unit": "chars",
+      "source": "KickAssembler.execute([Ljava/lang/String;)I @0038 bipush 54 -> StringUtil.centerPad (evidence ev_1c403f16)"
+    },
+    {
+      "name": "bytedump_header_width",
+      "group": "bytedump",
+      "value": 80,
+      "unit": "chars",
+      "source": "ByteDumpWriter.printSegment (bipush 80, pad = max(4, 80 - title length))"
+    },
+    {
+      "name": "bytedump_bytes_per_line",
+      "group": "bytedump",
+      "value": 32,
+      "unit": "bytes",
+      "source": "ByteDumpWriter.printBytes (entries over 64 bytes: 32 per line)"
+    },
+    {
+      "name": "bytedump_label_column",
+      "group": "bytedump",
+      "value": 8,
+      "unit": "chars",
+      "source": "ByteDumpWriter.printBytes (String.format \"%1$-8s\")"
+    },
+    {
+      "name": "symbolfile_indent",
+      "group": "symbols",
+      "value": "  ",
+      "source": "kickass.common.output.SymbolFile.indent"
+    },
+    {
+      "name": "vice_duplicate_suffix",
+      "group": "symbols",
+      "value": "__",
+      "source": "kickass.common.output.ViceSymbolFile"
+    },
+    {
+      "name": "d64_default_name",
+      "group": "disk",
+      "value": "UNNAMED",
+      "source": "kickass.plugins.std.disk.C1541DiskWriter"
+    },
+    {
+      "name": "d64_default_id",
+      "group": "disk",
+      "value": "   2A",
+      "source": "kickass.plugins.std.disk.C1541DiskWriter"
+    },
+    {
+      "name": "d64_default_interleave",
+      "group": "disk",
+      "value": 10,
+      "unit": "sectors",
+      "source": "kickass.plugins.std.disk.C1541DiskWriter"
+    },
+    {
+      "name": "d64_tracks",
+      "group": "disk",
+      "value": 35,
+      "unit": "count",
+      "source": "observed: written .d64 size 174848 bytes"
+    },
+    {
+      "name": "d64_directory_interleave",
+      "group": "disk",
+      "value": 1,
+      "unit": "sectors",
+      "source": "D64Image.generateImage: directory sectors 18/1, 18/2, ... in order, 8 entries each"
+    },
+    {
+      "name": "d64_first_file_track",
+      "group": "disk",
+      "value": 1,
+      "source": "observed: .d64 written by KickAss.jar"
+    },
+    {
+      "name": "jpeg_idct_const_bits",
+      "group": "pictures",
+      "value": 13,
+      "source": "observed: LoadPicture pixel checksum equals the original (reference slow integer IDCT)"
+    },
+    {
+      "name": "jpeg_idct_pass1_bits",
+      "group": "pictures",
+      "value": 2,
+      "source": "observed: LoadPicture pixel checksum equals the original (reference slow integer IDCT)"
+    },
+    {
+      "name": "jpeg_ycc_cr_to_r",
+      "group": "pictures",
+      "value": 1.402,
+      "source": "observed: LoadPicture pixel checksum equals the original"
+    },
+    {
+      "name": "jpeg_ycc_cb_to_b",
+      "group": "pictures",
+      "value": 1.772,
+      "source": "observed: LoadPicture pixel checksum equals the original"
+    },
+    {
+      "name": "jpeg_ycc_cr_to_g",
+      "group": "pictures",
+      "value": 0.71414,
+      "source": "observed: LoadPicture pixel checksum equals the original"
+    },
+    {
+      "name": "jpeg_ycc_cb_to_g",
+      "group": "pictures",
+      "value": 0.34414,
+      "source": "observed: LoadPicture pixel checksum equals the original"
+    },
+    {
+      "name": "picture_default_colors",
+      "group": "pictures",
+      "value": 4,
+      "unit": "count",
+      "source": "Picture value createDefaultColorTable"
+    },
+    {
+      "name": "sid_name_offset",
+      "group": "sid",
+      "value": 22,
+      "unit": "bytes",
+      "source": "SID file value (header reader)"
+    },
+    {
+      "name": "sid_author_offset",
+      "group": "sid",
+      "value": 54,
+      "unit": "bytes",
+      "source": "SID file value (header reader)"
+    },
+    {
+      "name": "sid_copyright_offset",
+      "group": "sid",
+      "value": 86,
+      "unit": "bytes",
+      "source": "SID file value (header reader)"
+    },
+    {
+      "name": "sid_string_length",
+      "group": "sid",
+      "value": 32,
+      "unit": "bytes",
+      "source": "SID file value (header reader)"
+    },
+    {
+      "name": "default_encoding",
+      "group": "text",
+      "value": "screencode_mixed",
+      "source": "observed: 'a' encodes to 1"
+    },
+    {
+      "name": "struct_text_suffix",
+      "group": "script",
+      "value": "-struct",
+      "source": "kickass.pass.values.StructValue.getString"
+    },
+    {
+      "name": "enum_first_value",
+      "group": "script",
+      "value": 0,
+      "source": "kickass.pass.asmnode.directives.EnumDirective.executePass"
+    },
+    {
+      "name": "bytedump_small_entry_max",
+      "group": "bytedump",
+      "value": 3,
+      "unit": "bytes",
+      "source": "ByteDumpWriter.printBytes (if length <= 3: 3 slots per line)"
+    },
+    {
+      "name": "bytedump_medium_entry_max",
+      "group": "bytedump",
+      "value": 64,
+      "unit": "bytes",
+      "source": "ByteDumpWriter.printBytes (if length <= 64: 16 slots per line)"
+    },
+    {
+      "name": "bytedump_medium_bytes_per_line",
+      "group": "bytedump",
+      "value": 16,
+      "unit": "bytes",
+      "source": "ByteDumpWriter.printBytes"
+    },
+    {
+      "name": "bytedump_slot_width",
+      "group": "bytedump",
+      "value": 3,
+      "unit": "chars",
+      "source": "ByteDumpWriter.writeBytesLine (\"%02x \" or three spaces past the end)"
+    },
+    {
+      "name": "d64_max_visible_files",
+      "group": "disk",
+      "value": 152,
+      "unit": "count",
+      "source": "D64Image.generateImage (8 * sectors on track 18; 'Too many visible files')"
+    },
+    {
+      "name": "d64_directory_track",
+      "group": "disk",
+      "value": 18,
+      "source": "D64Image.generateImage"
+    },
+    {
+      "name": "d64_entries_per_sector",
+      "group": "disk",
+      "value": 8,
+      "unit": "count",
+      "source": "D64Image.generateImage"
+    },
+    {
+      "name": "d64_name_pad_byte",
+      "group": "disk",
+      "value": 160,
+      "source": "D64Image.generateImage (names padded with $a0 to 16)"
+    },
+    {
+      "name": "basic_link_base",
+      "group": "memory",
+      "value": 2049,
+      "unit": "address",
+      "source": "BasicUpstartSegmentModifier.createUpstart (link = 2049 + 8 + digits - 2)"
+    },
+    {
+      "name": "vice_hash_initial_capacity",
+      "group": "symbols",
+      "value": 16,
+      "unit": "count",
+      "source": "ViceSymbolFile.writeSymbols (java.util.HashMap order)"
+    },
+    {
+      "name": "vice_hash_load_factor",
+      "group": "symbols",
+      "value": 0.75,
+      "source": "ViceSymbolFile.writeSymbols (java.util.HashMap order)"
+    },
+    {
+      "name": "exit_code_on_error",
+      "group": "log",
+      "value": 1,
+      "source": "KickAssembler.execute @00cc iconst_1 (error flag, or-ed with printAsmInfo @00e5)"
+    }
+  ]
+}
