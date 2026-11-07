@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub enum PLine {
+    /// an error that the rest of the file can go on after
+    Error { file: usize, line: u32, col: u32, msg: String },
     Text { file: usize, line: u32, text: String },
     /// start of an imported file
     Begin(usize),
@@ -194,11 +196,19 @@ impl<'a> Pre<'a> {
                         };
                         if cond {
                             let fname = fname.trim().trim_matches('"');
-                            self.import(fname, &dir, id).map_err(perr)?;
+                            if let Err(msg) = self.import(fname, &dir, id) {
+                                // the position of the file name
+                                let col = l.find('"').map_or(1, |i| i as u32 + 1);
+                                self.out.push(PLine::Error { file: id, line: line_no, col, msg });
+                            }
                         }
                     }
+                    w if w.starts_with(|c: char| c.is_ascii_alphabetic()) => {
+                        let col = (l.len() - t.len()) as u32 + 1;
+                        self.out.push(PLine::Error { file: id, line: line_no, col, msg: format!("Unknown preprocessor directive #{}", w) });
+                    }
                     _ => {
-                        // not a preprocessor directive we know: hand it to the parser
+                        // not a preprocessor directive: hand it to the parser
                         self.out.push(PLine::Text { file: id, line: line_no, text: l.to_string() });
                     }
                 }
@@ -222,7 +232,10 @@ impl<'a> Pre<'a> {
                 let r = rest.trim_start();
                 if let Some(f) = r.strip_prefix("source") {
                     let fname = f.trim().trim_matches('"');
-                    self.import(fname, &dir, id).map_err(perr)?;
+                    if let Err(msg) = self.import(fname, &dir, id) {
+                        let col = (l.len() - t.len()) as u32 + 1;
+                        self.out.push(PLine::Error { file: id, line: line_no, col, msg });
+                    }
                     continue;
                 }
             }
@@ -233,7 +246,7 @@ impl<'a> Pre<'a> {
     }
 
     fn import(&mut self, fname: &str, dir: &Path, cur: usize) -> Result<(), String> {
-        let mut p = find_file(fname, dir, &self.libdirs).ok_or_else(|| format!("Can't open file '{}'", fname))?;
+        let mut p = find_file(fname, dir, &self.libdirs).ok_or_else(|| format!("Can't open file: {}", fname))?;
         for (a, b) in &self.replace {
             if p.canonicalize().ok() == a.canonicalize().ok() {
                 p = b.clone();
@@ -242,7 +255,7 @@ impl<'a> Pre<'a> {
         if self.depth > 64 {
             return Err("Too deep import nesting".into());
         }
-        let bytes = std::fs::read(&p).map_err(|_| format!("Can't open file '{}'", fname))?;
+        let bytes = std::fs::read(&p).map_err(|_| format!("Can't open file: {}", fname))?;
         let text = String::from_utf8_lossy(&bytes).to_string();
         self.imported.push(p.clone());
         self.depth += 1;

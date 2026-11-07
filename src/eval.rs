@@ -51,6 +51,8 @@ pub struct Scope {
     pub ns: usize,
     /// not shown as a { } block in the symbol file (.lohifill tables)
     pub no_sym: bool,
+    /// the body of a macro, function or pseudocommand call: its labels stay out of the symbol file
+    pub call_scope: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +96,7 @@ pub struct SegParams {
     pub name: Option<String>,
     pub ftype: Option<String>,
     pub mbfiles: bool,
+    pub format_pos: Pos,
     pub other: HashMap<String, Val>,
     pub pos: Pos,
 }
@@ -283,6 +286,14 @@ pub struct Asm {
     pub rng: Cell<u64>,
     /// labels waiting for the next bytes (for the byte dump); value None = at the pc
     pub dump_labels: Vec<(String, Option<i64>)>,
+    /// code labels with their segment and address, for the debug dump
+    pub placed_labels: Vec<(String, i64, String, Pos)>,
+    /// how many .segmentout directives this pass has run
+    pub segouts: u32,
+    /// fields that a known scope didn't have in the first pass, with the type name of the owner
+    pub member_unks: Vec<(Pos, &'static str, u32, String)>,
+    /// prgFiles and sidFiles that the first pass couldn't find
+    pub missing_files: Vec<(Pos, String)>,
     /// labels in the order they were placed (ScopeManager.addResolvedSymbol order)
     /// kept over all passes: a label is added in the first pass where its value is known
     pub label_order: Vec<(u32, String)>,
@@ -291,9 +302,24 @@ pub struct Asm {
     pub fn_home: HashMap<usize, usize>,
     /// the error was found before the passes in the original (gets a blank line first)
     pub early_error: bool,
+    /// the names of the program, from the check before the first pass
+    pub declared: crate::names::Declared,
+    /// inside `.asserterror`, where an unknown name is what is expected
+    pub expect_error: u32,
+    first_unk_in_namespace: bool,
+    /// the names read from the previous pass in this pass
+    fwd_reads: std::collections::HashSet<(u32, String)>,
+    /// something else than a name was read from the previous pass
+    pub fwd_other: bool,
+    /// a branch was too far with a value of the previous pass
+    pub range_deferred: bool,
+    /// such a branch is an error in this pass
+    pub range_strict: bool,
 }
 
 pub const MAX_PASSES: u32 = 12;
+/// R65's own limit on nested calls. The original has none: it runs out of Java stack.
+pub const MAX_CALL_DEPTH: u32 = 10_000;
 /// where code goes when no *= was given (mechanics: default_block_start)
 pub const DEFAULT_BLOCK_START: i64 = 8192;
 /// the BASIC program area of the C64 (mechanics: basic_start)
@@ -353,10 +379,21 @@ impl Asm {
             log,
             rng: Cell::new(0x2545F4914F6CDD1D),
             dump_labels: vec![],
+            placed_labels: vec![],
+            segouts: 0,
+            member_unks: vec![],
+            missing_files: vec![],
             label_order: vec![],
             label_seen: Default::default(),
             fn_home: HashMap::new(),
             early_error: false,
+            declared: Default::default(),
+            expect_error: 0,
+            first_unk_in_namespace: false,
+            fwd_reads: Default::default(),
+            fwd_other: false,
+            range_deferred: false,
+            range_strict: false,
         };
         a.init_consts();
         a.ns_by_path.insert("".into(), 0);
@@ -486,7 +523,7 @@ impl Asm {
                 let key = (f.name.clone(), f.params.len());
                 if let Some(old) = nsr.funcs.get(&key) {
                     if !Rc::ptr_eq(old, &f) && hoisting {
-                        return err(f.pos, format!("Function '{}' is already defined", f.name));
+                        return err(f.pos, format!("The function '{}' is already defined.", f.name));
                     }
                 }
                 nsr.funcs.insert(key, f);
@@ -495,7 +532,7 @@ impl Asm {
                 let list = nsr.macros.entry(f.name.clone()).or_default();
                 if let Some(i) = list.iter().position(|m| m.params.len() == f.params.len()) {
                     if !Rc::ptr_eq(&list[i], &f) && hoisting {
-                        return err(f.pos, format!("The macro '{}' is already defined", f.name));
+                        return err(f.pos, format!("The macro '{}'  is already defined", f.name));
                     }
                     list[i] = f;
                 } else {
@@ -505,7 +542,7 @@ impl Asm {
             _ => {
                 if let Some(old) = nsr.pseudos.get(&f.name) {
                     if !Rc::ptr_eq(old, &f) && hoisting {
-                        return err(f.pos, format!("The pseudocommand '{}' is already defined", f.name));
+                        return err(f.pos, format!("The pseudo command '{}'  is already defined", f.name));
                     }
                 }
                 nsr.pseudos.insert(f.name.clone(), f);
@@ -530,6 +567,10 @@ impl Asm {
         self.used_unk = false;
         self.used_fwd = false;
         self.first_unk = None;
+        self.first_unk_in_namespace = false;
+        self.fwd_reads.clear();
+        self.fwd_other = false;
+        self.range_deferred = false;
         self.unks.clear();
         self.multi.clear();
         self.zp_mode = 0;
@@ -547,6 +588,8 @@ impl Asm {
         self.disk_reqs.clear();
         self.out_files.clear();
         self.dump_labels.clear();
+        self.placed_labels.clear();
+        self.segouts = 0;
         self.rng.set(0x2545F4914F6CDD1D);
     }
 
@@ -563,9 +606,10 @@ impl Asm {
                 }
             }
         }
+        // the length doesn't count: a shorter instruction moves no label when nothing follows it
         for sg in &self.segs {
             for b in &sg.blocks {
-                v.push((u32::MAX, sg.name.clone(), ((b.start as u64) << 32) ^ b.bytes.len() as u64));
+                v.push((u32::MAX, sg.name.clone(), b.start as u64));
             }
         }
         let mut keys: Vec<&String> = self.multi.keys().collect();
@@ -589,15 +633,27 @@ impl Asm {
             self.pass += 1;
             self.reset_pass();
             if self.pass > 1 {
-                self.say(&format!("flex pass {}", self.pass));
+                if !self.range_strict {
+                    self.say(&format!("flex pass {}", self.pass));
+                }
             }
             let r = self.exec_block_here(&program).map(|_| ());
             if let Err(e) = r {
+                // a call of something that doesn't exist is found before the first pass
+                let undefined = e.msg.ends_with(" not defined") && (e.msg.starts_with("Macro command") || e.msg.starts_with("Pseudo command"));
+                let wrong_call = e.msg.starts_with("Invalid number of arguments for") || e.msg.starts_with("Too many arguments for") || (e.msg.starts_with("Unknown function '") && e.called.is_empty());
+                if self.pass == 1 && (undefined || wrong_call) {
+                    self.early_error = true;
+                    return Err(e);
+                }
+                if self.range_strict {
+                    return Err(e);
+                }
                 if self.pass == 1 {
                     self.say("flex pass 1");
                 }
                 // type errors and unknown functions don't go away in a later pass
-                let hopeless = ["Can't get a", "Unknown function", "Variable '", "Unknown macro", "Unknown pseudocommand", "Syntax error"]
+                let hopeless = ["Can't get a", "Unknown function", "Variable '", "Macro command", "Pseudo command", "Syntax error", "Index out of range", "Invalid number", "Too many arguments"]
                     .iter()
                     .any(|p| e.msg.starts_with(p));
                 let retry = !hopeless && (self.used_unk || self.used_fwd) && self.pass < MAX_PASSES;
@@ -626,15 +682,35 @@ impl Asm {
             }
             if self.pass == 1 {
                 self.say("flex pass 1");
+                if let Some(p) = self.declared.unresolved {
+                    self.say("flex pass 2");
+                    return err(p, "Value can't be resolved");
+                }
+                let missing = self.member_unks.iter().find(|(_, _, id, n)| self.scopes[*id as usize].syms.contains_key(n) || !self.declared_anywhere(n));
+                if let Some((p, ty, _, n)) = missing {
+                    return err(*p, format!("Variable '{}' not present on value of type '{}'", n, ty));
+                }
+                if let Some((p, f)) = self.missing_files.first() {
+                    self.early_error = true;
+                    return err(*p, format!("Can't open file '{}'", f));
+                }
             }
             let sig = self.signature();
-            let stable = prev_sig.as_ref().map(|p| *p == sig).unwrap_or(false);
-            if !self.used_unk && (!self.used_fwd || stable) {
+            let stable = prev_sig.as_ref().map(|p| *p == sig).unwrap_or(false) || self.forward_values_held();
+            if !self.used_unk && (!self.used_fwd || stable) && !self.range_deferred {
                 return Ok(self.pass);
             }
+            // the values are final now, so a jump that is too far is a real error
+            self.range_strict = !self.used_unk && (!self.used_fwd || stable);
             if self.used_unk && !self.lenient && self.pass >= 2 || self.pass >= MAX_PASSES {
                 if let Some((p, n)) = self.first_unk.clone() {
-                    return err(p, format!("Unknown symbol '{}'", n));
+                    return match n.strip_prefix('.') {
+                        Some(field) => {
+                            let ty = if self.first_unk_in_namespace { "Namespace" } else { "LabelValue" };
+                            err(p, format!("Variable '{}' not present on value of type '{}'", field, ty))
+                        }
+                        None => err(p, format!("Unknown symbol '{}'", n)),
+                    };
                 }
                 if self.pass >= MAX_PASSES {
                     return Err(AsmError { pos: None, msg: "Made no progress and can't solve the program".into(), called: vec![] });
@@ -648,20 +724,38 @@ impl Asm {
         }
     }
 
+    /// Did every name read from the previous pass end up with that same value? Then one more
+    /// pass would only give the same result.
+    fn forward_values_held(&self) -> bool {
+        !self.fwd_other
+            && self.fwd_reads.iter().all(|(id, name)| {
+                let old = self.prev_scopes.get(*id as usize).and_then(|s| s.syms.get(name));
+                let new = self.scopes.get(*id as usize).and_then(|s| s.syms.get(name));
+                match (old.map(|s| &s.val), new.map(|s| &s.val)) {
+                    (Some(Val::Num(a, ..)), Some(Val::Num(b, f, _))) => a == b && f & F_UNK == 0,
+                    (Some(Val::Scope(_)), Some(Val::Scope(_))) => true,
+                    _ => false,
+                }
+            })
+    }
+
     /// the first unknown name that isn't declared anywhere in the program
     fn undeclared(&self) -> Option<(Pos, String)> {
         for (p, n) in &self.unks {
             if n == "[]" || n.starts_with('!') {
                 continue;
             }
-            let known = self.scopes.iter().chain(self.prev_scopes.iter()).any(|s| s.syms.contains_key(n))
-                || self.consts.contains_key(n)
-                || self.ns.iter().any(|x| x.name == *n || x.name.ends_with(&format!(".{}", n)));
-            if !known {
+            if !self.declared_anywhere(n) {
                 return Some((*p, n.clone()));
             }
         }
         None
+    }
+
+    fn declared_anywhere(&self, n: &str) -> bool {
+        self.scopes.iter().chain(self.prev_scopes.iter()).any(|s| s.syms.contains_key(n))
+            || self.consts.contains_key(n)
+            || self.ns.iter().any(|x| x.name == n || x.name.ends_with(&format!(".{}", n)))
     }
 
     fn save_prev_segs(&mut self) {
@@ -672,7 +766,8 @@ impl Asm {
     }
 
     /// checks that memory blocks don't overlap (done once, in the output pass)
-    pub fn check_overlap(&mut self) -> R<()> {
+    pub fn check_overlap(&mut self) -> Vec<AsmError> {
+        let mut errors = vec![];
         for i in 0..self.segs.len() {
             let sg = &self.segs[i];
             if sg.p.allow_overlap {
@@ -680,22 +775,23 @@ impl Asm {
             }
             let mut bl: Vec<&Blk> = sg.blocks.iter().filter(|b| !b.virt && !b.bytes.is_empty()).collect();
             bl.sort_by_key(|b| b.start);
-            let mut found = None;
+            let mut found = vec![];
             for w in bl.windows(2) {
                 if w[0].start + w[0].bytes.len() as i64 > w[1].start {
-                    found = Some(format!("In segment '{}' the memoryblock {} overlaps {}", sg.name, blk_desc(w[1]), blk_desc(w[0])));
-                    break;
+                    // the one with the lower address comes first; with the same address, the later one
+                    let (a, b) = if w[0].start == w[1].start { (w[1], w[0]) } else { (w[0], w[1]) };
+                    found.push(format!("In segment '{}' the memoryblock {} overlaps {}", sg.name, blk_desc(a), blk_desc(b)));
                 }
             }
-            if let Some(msg) = found {
+            for msg in found {
                 if self.cfg.allow_overlap {
                     self.warnings.push(Warning { pos: Pos::default(), msg });
                 } else {
-                    return Err(AsmError { pos: None, msg, called: vec![] });
+                    errors.push(AsmError { pos: None, msg, called: vec![] });
                 }
             }
         }
-        Ok(())
+        errors
     }
 
     // ------------------------------------------------------------ scopes
@@ -722,8 +818,9 @@ impl Asm {
         }
         if let Some(ps) = self.prev_scopes.get(id as usize) {
             if let Some(sy) = ps.syms.get(name) {
-                if sy.kind == SymKind::Label {
+                if sy.kind == SymKind::Label || matches!(sy.val, Val::Scope(_)) {
                     self.used_fwd = true;
+                    self.fwd_reads.insert((id, name.to_string()));
                     return Some(match sy.val.clone() {
                         Val::Num(x, f, sc) => Val::Num(x, (f | F_FWD) & !F_UNK, sc),
                         o => o,
@@ -763,6 +860,19 @@ impl Asm {
         if let Some(v) = self.consts.get(name) {
             return Ok(v.clone());
         }
+        // The check before the first pass has passed, so only the body of a macro or function
+        // can get here, when it runs before the line that declares the name.
+        if !self.declared.labels.contains(name) {
+            if self.declared.consts.contains(name) {
+                return err(pos, "Symbol is not yet initialized");
+            }
+            if self.declared.vars.contains(name) {
+                return Ok(Val::Null);
+            }
+            if self.expect_error > 0 {
+                return err(pos, format!("Unknown symbol '{}'", name));
+            }
+        }
         if self.pass == 1 || self.lenient {
             return Ok(self.unknown(pos, name));
         }
@@ -770,17 +880,21 @@ impl Asm {
     }
 
     /// a symbol inside a given scope (label scope, namespace, macro scope...)
-    pub fn scope_field(&mut self, id: u32, name: &str, pos: Pos) -> R<Val> {
+    pub fn scope_field(&mut self, id: u32, name: &str, ty: &'static str, pos: Pos) -> R<Val> {
         let cur = (id as usize) < self.scopes.len();
         if cur {
+            // from the outside only labels and namespaces can be reached
             if let Some(sy) = self.scopes[id as usize].syms.get(name) {
-                return Ok(sy.val.clone());
+                if sy.kind == SymKind::Label || matches!(sy.val, Val::Scope(_)) || self.scopes[id as usize].no_sym {
+                    return Ok(sy.val.clone());
+                }
             }
         }
         if let Some(ps) = self.prev_scopes.get(id as usize) {
             if let Some(sy) = ps.syms.get(name) {
-                if sy.kind == SymKind::Label {
+                if sy.kind == SymKind::Label || ps.no_sym || matches!(sy.val, Val::Scope(_)) {
                     self.used_fwd = true;
+                    self.fwd_reads.insert((id, name.to_string()));
                     return Ok(match sy.val.clone() {
                         Val::Num(x, f, sc) => Val::Num(x, (f | F_FWD) & !F_UNK, sc),
                         o => o,
@@ -788,18 +902,45 @@ impl Asm {
                 }
             }
         }
-        if self.pass == 1 || self.lenient || !cur {
-            return Ok(self.unknown(pos, name));
+        if self.pass == 1 && cur {
+            self.member_unks.push((pos, ty, id, name.to_string()));
         }
-        err(pos, format!("Unknown symbol '{}'", name))
+        if self.pass == 1 || self.lenient || !cur {
+            if self.first_unk.is_none() && ty == "Namespace" {
+                self.first_unk_in_namespace = true;
+            }
+            return Ok(self.unknown_member(pos, name));
+        }
+        err(pos, format!("Variable '{}' not present on value of type '{}'", name, ty))
+    }
+
+    /// A field of something that isn't known yet: not an unknown symbol, the next pass decides.
+    pub fn unknown_member(&mut self, pos: Pos, name: &str) -> Val {
+        self.used_unk = true;
+        if self.first_unk.is_none() {
+            self.first_unk = Some((pos, format!(".{}", name)));
+        }
+        Val::Num(0.0, F_UNK, 0)
+    }
+
+    /// is this name a label in the scopes around the current code?
+    pub fn is_label(&self, name: &str, root: bool) -> bool {
+        let mut id = if root { 0 } else { self.cur_scope };
+        loop {
+            if let Some(sy) = self.scopes.get(id as usize).and_then(|s| s.syms.get(name)) {
+                return sy.kind == SymKind::Label;
+            }
+            match self.scope_parent(id) {
+                Some(p) => id = p,
+                None => return false,
+            }
+        }
     }
 
     pub fn define(&mut self, scope: u32, name: &str, val: Val, kind: SymKind, pos: Pos) -> R<()> {
         let sc = &mut self.scopes[scope as usize];
-        if let Some(old) = sc.syms.get(name) {
-            if (old.kind == SymKind::Label && kind == SymKind::Label) || old.kind == SymKind::Const {
-                return err(pos, format!("Symbol '{}' is already defined", name));
-            }
+        if sc.syms.contains_key(name) {
+            return err(pos, format!("The symbol '{}' is already defined", name));
         } else {
             sc.order.push(name.to_string());
         }
@@ -860,6 +1001,7 @@ impl Asm {
             return match end {
                 Some(mut e) => {
                     self.used_fwd = true;
+                    self.fwd_other = true;
                     if let Some(a) = p.align {
                         if a > 0 && e % a != 0 {
                             e += a - e % a;

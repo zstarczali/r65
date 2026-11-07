@@ -13,10 +13,22 @@ pub struct ParseError {
 type R<T> = Result<T, ParseError>;
 
 pub struct Parser<'a> {
+    /// syntax errors with their place in the token list; parsing goes on after each
+    pub errors: Vec<(usize, ParseError)>,
+    /// inside a function or .define, which can't hold code
+    no_code: u32,
     t: &'a [Token],
     p: usize,
     mnemonics: &'a HashSet<String>,
+    /// -pseudoc3x: a semicolon separates pseudocommand arguments, as in Kick Assembler 3
+    pseudo_c3x: bool,
 }
+
+const MODE_SUFFIXES: [&str; 22] = [
+    "a", "abs", "z", "zp", "im", "imm", "zx", "zpx", "zy", "zpy", "izx", "izpx", "izy", "izpy", "ax", "absx", "ay", "absy", "i", "ind", "r", "rel",
+];
+
+pub const CPU_NAMES: [&str; 4] = ["_6502NoIllegals", "_6502", "dtv", "_65c02"];
 
 fn is_end(t: &Tok) -> bool {
     matches!(t, Tok::Newline | Tok::Eof | Tok::FileEnd | Tok::Op(";") | Tok::Op("}"))
@@ -24,7 +36,12 @@ fn is_end(t: &Tok) -> bool {
 
 impl<'a> Parser<'a> {
     pub fn new(t: &'a [Token], mnemonics: &'a HashSet<String>) -> Self {
-        Parser { t, p: 0, mnemonics }
+        Parser { t, p: 0, mnemonics, pseudo_c3x: false, errors: vec![], no_code: 0 }
+    }
+
+    pub fn pseudo_c3x(mut self, on: bool) -> Self {
+        self.pseudo_c3x = on;
+        self
     }
 
     fn peek(&self) -> &Tok {
@@ -84,9 +101,174 @@ impl<'a> Parser<'a> {
     }
 
     // ---------------------------------------------------------------- program
-    pub fn program(&mut self) -> R<Block> {
-        let b = self.block_until_eof()?;
-        Ok(b)
+    pub fn program(&mut self) -> Block {
+        match self.block_until_eof() {
+            Ok(b) => b,
+            Err(e) => {
+                self.note(e);
+                make_block(vec![])
+            }
+        }
+    }
+
+    /// Keeps an error. It's ordered as if the next token had been read already.
+    fn note(&mut self, mut e: ParseError) -> usize {
+        if e.msg.starts_with("Syntax error") {
+            e.msg = "Syntax error".into();
+        }
+        let mut key = (self.p + 1).min(self.t.len() - 1);
+        while matches!(self.t[key].tok, Tok::Newline) && key + 1 < self.t.len() {
+            key += 1;
+        }
+        self.errors.push((key, e));
+        key
+    }
+
+    /// Goes on after an error: the rest of the statement goes, with any `{ }` block in it.
+    fn skip_statement(&mut self, start: usize) {
+        let mut depth = 0;
+        // a `;` inside brackets is part of the statement, as in `.for`
+        let mut group = 0i32;
+        for t in &self.t[start..self.p] {
+            match t.tok {
+                Tok::Op("(") | Tok::Op("[") => group += 1,
+                Tok::Op(")") | Tok::Op("]") => group = (group - 1).max(0),
+                _ => {}
+            }
+        }
+        loop {
+            match self.peek() {
+                Tok::Eof | Tok::FileEnd | Tok::FileBegin(_) => return,
+                Tok::Newline if depth == 0 => return,
+                Tok::Op(";") if depth == 0 && group == 0 => {
+                    self.next();
+                    return;
+                }
+                Tok::Op("(") | Tok::Op("[") => group += 1,
+                Tok::Op(")") | Tok::Op("]") => group = (group - 1).max(0),
+                Tok::Op("{") => depth += 1,
+                Tok::Op("}") => {
+                    if depth == 0 {
+                        return;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            self.next();
+        }
+    }
+
+    fn statement_or_skip(&mut self, out: &mut Vec<S>) {
+        let start = self.p;
+        let done = out.len();
+        if let Err(e) = self.statement(out) {
+            out.truncate(done);
+            self.note(e);
+            self.skip_statement(start);
+            if self.p == start && !matches!(self.peek(), Tok::Eof | Tok::FileEnd | Tok::Newline | Tok::Op("}")) {
+                self.next();
+            }
+        }
+    }
+
+    /// the body of a directive; when one statement fails there's this error too
+    fn body_or(&mut self, pos: Pos, msg: &str) -> Block {
+        let start = self.p;
+        match self.body() {
+            Ok(b) => b,
+            Err(e) => {
+                let key = self.note(e);
+                self.skip_statement(start);
+                self.errors.push((key, ParseError { pos, msg: msg.to_string() }));
+                make_block(vec![])
+            }
+        }
+    }
+
+    /// `(condition)` of an `.if`: the body still counts when the condition has an error
+    fn if_condition(&mut self) -> R<E> {
+        let start = self.p;
+        self.expect_op("(")?;
+        let pos = self.pos();
+        let r = self.expr().and_then(|c| self.expect_op(")").map(|_| c));
+        r.or_else(|e| {
+            self.note(e);
+            self.p = start;
+            let mut depth = 0;
+            loop {
+                match self.peek() {
+                    Tok::Eof | Tok::FileEnd => break,
+                    Tok::Op("(") => depth += 1,
+                    Tok::Op(")") => {
+                        depth -= 1;
+                        if depth == 0 {
+                            self.next();
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                self.next();
+            }
+            Ok(E { k: EK::Bool(false), pos })
+        })
+    }
+
+    fn at_end_of_source(&self) -> bool {
+        let mut n = 0;
+        while matches!(self.peek_at(n), Tok::Newline) {
+            n += 1;
+        }
+        matches!(self.peek_at(n), Tok::Eof | Tok::FileEnd)
+    }
+
+    /// A line end after a directive's name. What the original says depends on the directive.
+    fn directive_at_line_end(&mut self, d: &str, pos: Pos) -> R<()> {
+        if !matches!(self.peek(), Tok::Newline) {
+            return Ok(());
+        }
+        let next_col = Pos { col: pos.col + 1, ..pos };
+        match d {
+            "var" | "const" | "label" | "pc" | "import" | "segment" | "segmentdef" | "segmentout" | "disk" | "file" | "modify" | "if" | "for" => {
+                self.err("Unexpected end of line")
+            }
+            "fill" | "fillword" => self.err("Comma seperator expected"),
+            "cpu" => self.err("Token must be an identifer"),
+            "lohifill" | "errorif" => Err(ParseError { pos, msg: "Invalid number of arguments.".into() }),
+            "assert" => Err(ParseError { pos, msg: "Missing second argument".into() }),
+            "asserterror" => Err(ParseError { pos: next_col, msg: "Missing second argument".into() }),
+            "align" => Err(ParseError { pos: next_col, msg: "Missing page size argument".into() }),
+            "watch" => Err(ParseError { pos, msg: "First argument must be present.".into() }),
+            "namespace" | "function" | "macro" | "pseudocommand" | "struct" | "define" | "filenamespace" => {
+                // the name can be on a later line
+                self.skip_nl_in();
+                if d != "filenamespace" {
+                    self.next();
+                    if self.at_end_of_source() {
+                        self.skip_nl_in();
+                        return self.err("Unexpected end of source");
+                    }
+                    self.p -= 1;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// What comes after a line end has to be this bracket.
+    fn expect_after_line_end(&mut self, bracket: &str) -> R<()> {
+        if matches!(self.peek(), Tok::Newline) {
+            self.skip_nl_in();
+            if matches!(self.peek(), Tok::Eof | Tok::FileEnd) {
+                return self.err("Unexpected end of source");
+            }
+            if !self.is_op(bracket) {
+                return self.err("Invalid token");
+            }
+        }
+        Ok(())
     }
 
     fn block_until_eof(&mut self) -> R<Block> {
@@ -99,7 +281,7 @@ impl<'a> Parser<'a> {
                 Tok::FileEnd => {
                     self.next();
                 }
-                _ => self.statement(&mut stmts)?,
+                _ => self.statement_or_skip(&mut stmts),
             }
         }
         Ok(make_block(stmts))
@@ -117,11 +299,9 @@ impl<'a> Parser<'a> {
                     self.next();
                     break;
                 }
-                Tok::Eof => return self.err("Syntax error, missing '}'"),
-                Tok::FileEnd => {
-                    self.next();
-                }
-                _ => self.statement(&mut stmts)?,
+                // the missing bracket has been reported
+                Tok::Eof | Tok::FileEnd => break,
+                _ => self.statement_or_skip(&mut stmts),
             }
         }
         Ok(make_block(stmts))
@@ -139,7 +319,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Eof => break,
                 Tok::Op("}") => return self.err("Syntax error, unexpected '}'"),
-                _ => self.statement(&mut stmts)?,
+                _ => self.statement_or_skip(&mut stmts),
             }
         }
         Ok(make_block(stmts))
@@ -169,16 +349,14 @@ impl<'a> Parser<'a> {
             }
             return Ok(());
         }
-        if let Tok::Ident(s) = &t {
-            if s == "else" {
-                return Ok(());
-            }
-        }
         self.err("Syntax error")
     }
 
     fn statement(&mut self, out: &mut Vec<S>) -> R<()> {
         let pos = self.pos();
+        if self.no_code > 0 && matches!(self.peek(), Tok::Ident(_) | Tok::MultiDecl(_) | Tok::Op("*=") | Tok::Op("*") | Tok::Op(":") | Tok::Op("@")) {
+            return self.err("Invalid token");
+        }
         let push = |out: &mut Vec<S>, k: SK| out.push(S { k, pos });
         match self.peek().clone() {
             Tok::FileBegin(id) => {
@@ -202,6 +380,18 @@ impl<'a> Parser<'a> {
                     self.p += 3;
                     push(out, SK::Label { name: n, multi: false, root: true });
                     return Ok(());
+                }
+                if let Tok::Ident(name) = self.peek_at(1).clone() {
+                    // a macro or pseudocommand of the root namespace
+                    self.p += 2;
+                    if self.is_op("(") && !self.tok_at(0).sp {
+                        let args = self.call_args()?;
+                        push(out, SK::MacroCall { name, root: true, args });
+                    } else {
+                        let args = self.pseudo_args()?;
+                        push(out, SK::PseudoCall { name, root: true, args });
+                    }
+                    return self.end_stmt();
                 }
                 return self.err("Syntax error");
             }
@@ -243,9 +433,13 @@ impl<'a> Parser<'a> {
                 if self.mnemonics.contains(&name) {
                     self.next();
                     let mut suffix = None;
-                    if self.is_op(".") && !self.tok_at(0).sp {
+                    if self.is_op(".") {
                         if let Tok::Ident(s) = self.peek_at(1).clone() {
                             self.p += 2;
+                            if !MODE_SUFFIXES.contains(&s.as_str()) {
+                                // the statement itself goes on
+                                self.note(ParseError { pos, msg: format!("Unknown extension: {}", s) });
+                            }
                             suffix = Some(s);
                         }
                     }
@@ -263,24 +457,23 @@ impl<'a> Parser<'a> {
                         push(out, SK::MacroCall { name, root: false, args });
                         return self.end_stmt();
                     }
-                    Tok::Op(".") | Tok::Op("=") | Tok::Op("+=") | Tok::Op("-=") | Tok::Op("*=") | Tok::Op("/=")
-                    | Tok::Op("++") | Tok::Op("--") | Tok::Op("[")
-                        if !self.tok_at(1).sp || !matches!(nxt, Tok::Op(".")) =>
-                    {
-                        let e = self.expr()?;
-                        push(out, SK::Eval(e));
-                        return self.end_stmt();
-                    }
                     _ => {}
                 }
                 self.next();
+                if (self.is_op("++") || self.is_op("--")) && !self.tok_at(0).sp {
+                    return self.err("Syntax error");
+                }
                 let args = self.pseudo_args()?;
                 push(out, SK::PseudoCall { name, root: false, args });
                 return self.end_stmt();
             }
             _ => {}
         }
-        self.err("Syntax error")
+        if self.is_op("#") {
+            self.next();
+            return self.err("Token must be an identifer");
+        }
+        self.err("Invalid token")
     }
 
     fn set_pc(&mut self, out: &mut Vec<S>, pos: Pos) -> R<()> {
@@ -332,7 +525,7 @@ impl<'a> Parser<'a> {
         }
         loop {
             v.push(self.mnem_arg(false)?);
-            if self.eat_op(":") {
+            if self.eat_op(":") || (self.pseudo_c3x && self.eat_op(";")) {
                 continue;
             }
             break;
@@ -342,7 +535,7 @@ impl<'a> Parser<'a> {
 
     fn arg_end(&self) -> bool {
         let t = self.peek();
-        is_end(t) || matches!(t, Tok::Op(":")) || matches!(t, Tok::Ident(s) if s == "else")
+        is_end(t) || matches!(t, Tok::Op(":"))
     }
 
     fn mnem_arg(&mut self, allow_label: bool) -> R<Arg> {
@@ -383,7 +576,7 @@ impl<'a> Parser<'a> {
             }
             let after = &self.t[(j + 1).min(self.t.len() - 1)].tok;
             let after2 = &self.t[(j + 2).min(self.t.len() - 1)].tok;
-            let ind_end = is_end(after) || matches!(after, Tok::Op(":")) || matches!(after, Tok::Ident(s) if s=="else");
+            let ind_end = is_end(after) || matches!(after, Tok::Op(":"));
             let ind_y = matches!(after, Tok::Op(",")) && matches!(after2, Tok::Ident(s) if s == "y");
             if ind_end || ind_y {
                 self.next();
@@ -433,7 +626,7 @@ impl<'a> Parser<'a> {
     }
     fn arg_end_at(&self, n: usize) -> bool {
         let t = self.peek_at(n);
-        is_end(t) || matches!(t, Tok::Op(":")) || matches!(t, Tok::Ident(s) if s == "else")
+        is_end(t) || matches!(t, Tok::Op(":"))
     }
 
     fn params(&mut self) -> R<Params> {
@@ -467,17 +660,24 @@ impl<'a> Parser<'a> {
     fn expr_list(&mut self) -> R<Vec<E>> {
         let mut v = vec![self.expr()?];
         while self.eat_op(",") {
-            self.skip_nl_in();
             v.push(self.expr()?);
         }
         Ok(v)
     }
 
     fn directive(&mut self, d: &str, out: &mut Vec<S>, pos: Pos) -> R<()> {
+        const CODE: [&str; 26] = [
+            "byte", "by", "word", "wo", "dword", "dw", "text", "te", "fill", "fillword", "lohifill", "align", "pc", "label", "macro", "function",
+            "pseudocommand", "namespace", "filenamespace", "segment", "segmentdef", "segmentout", "memblock", "pseudopc", "zp", "disk",
+        ];
+        if (self.no_code > 0 && CODE.contains(&d)) || (d == "return" && self.no_code == 0) {
+            return Err(ParseError { pos, msg: "Invalid directive".into() });
+        }
+        self.directive_at_line_end(d, pos)?;
         let k = match d {
-            "byte" | "by" => SK::Data { size: 1, items: self.expr_list()? },
-            "word" | "wo" => SK::Data { size: 2, items: self.expr_list()? },
-            "dword" | "dw" => SK::Data { size: 4, items: self.expr_list()? },
+            "byte" | "by" => SK::Data { size: 1, items: if self.arg_end() { vec![] } else { self.expr_list()? } },
+            "word" | "wo" => SK::Data { size: 2, items: if self.arg_end() { vec![] } else { self.expr_list()? } },
+            "dword" | "dw" => SK::Data { size: 4, items: if self.arg_end() { vec![] } else { self.expr_list()? } },
             "text" | "te" => SK::Text(self.expr_list()?),
             "fill" | "fillword" => {
                 let count = self.expr()?;
@@ -503,26 +703,29 @@ impl<'a> Parser<'a> {
                 return Ok(());
             }
             "var" => {
+                let npos = self.pos();
                 let (name, root) = self.opt_root_ident()?;
                 let init = if self.eat_op("=") { Some(self.expr()?) } else { None };
-                SK::Var { name, root, init }
+                SK::Var { name, root, npos, init }
             }
             "const" => {
+                let npos = self.pos();
                 let (name, root) = self.opt_root_ident()?;
                 self.expect_op("=")?;
-                SK::Const { name, root, e: self.expr()? }
+                SK::Const { name, root, npos, e: self.expr()? }
             }
             "label" => {
+                let npos = self.pos();
                 let (name, root) = self.opt_root_ident()?;
                 self.expect_op("=")?;
                 let e = self.expr()?;
                 let body = if self.is_op("{") { Some(self.brace_block()?) } else { None };
-                out.push(S { k: SK::LabelDef { name, root, e, body }, pos });
+                out.push(S { k: SK::LabelDef { name, root, npos, e, body }, pos });
                 return self.end_stmt();
             }
             "eval" => SK::Eval(self.expr()?),
             "enum" => {
-                self.skip_nl_in();
+                self.expect_after_line_end("{")?;
                 self.expect_op("{")?;
                 let mut v = vec![];
                 loop {
@@ -530,9 +733,10 @@ impl<'a> Parser<'a> {
                     if self.eat_op("}") {
                         break;
                     }
+                    let npos = self.pos();
                     let n = self.ident()?;
                     let e = if self.eat_op("=") { Some(self.expr()?) } else { None };
-                    v.push((n, e));
+                    v.push((n, e, npos));
                     self.skip_nl_in();
                     if self.eat_op(",") {
                         continue;
@@ -543,7 +747,7 @@ impl<'a> Parser<'a> {
                 }
                 SK::Enum(v)
             }
-            "print" => SK::Print(if self.arg_end() { E { k: EK::Str("".into()), pos } } else { self.expr()? }),
+            "print" => SK::Print(self.expr()?),
             "printnow" => SK::PrintNow(self.expr()?),
             "error" => SK::Error(self.expr()?),
             "errorif" => {
@@ -554,6 +758,14 @@ impl<'a> Parser<'a> {
             "assert" => {
                 let a = self.expr()?;
                 self.expect_op(",")?;
+                self.skip_nl_in();
+                if self.is_op("{") {
+                    let got = self.brace_block()?;
+                    self.expect_op(",")?;
+                    let want = self.brace_block()?;
+                    out.push(S { k: SK::AssertCode(a, got, want), pos });
+                    return self.end_stmt();
+                }
                 let b = self.expr()?;
                 self.expect_op(",")?;
                 SK::Assert(a, b, self.expr()?)
@@ -561,18 +773,26 @@ impl<'a> Parser<'a> {
             "asserterror" => {
                 let a = self.expr()?;
                 self.expect_op(",")?;
+                self.skip_nl_in();
+                if self.is_op("{") {
+                    let code = self.brace_block()?;
+                    out.push(S { k: SK::AssertErrCode(a, code), pos });
+                    return self.end_stmt();
+                }
                 SK::AssertErr(a, self.expr()?)
             }
             "if" => {
-                self.expect_op("(")?;
-                let c = self.expr()?;
-                self.expect_op(")")?;
-                let t = self.body()?;
+                let before = self.errors.len();
+                let c = self.if_condition()?;
+                if self.errors.len() > before && matches!(self.peek(), Tok::Eof | Tok::FileEnd) {
+                    return Ok(());
+                }
+                let t = self.body_or(pos, "If without body");
                 let save = self.p;
                 self.skip_nl();
                 let e = if matches!(self.peek(), Tok::Ident(s) if s == "else") {
                     self.next();
-                    Some(self.body()?)
+                    Some(self.body_or(pos, "Else without body"))
                 } else {
                     self.p = save;
                     None
@@ -584,15 +804,16 @@ impl<'a> Parser<'a> {
                 self.expect_op("(")?;
                 let init = if self.is_op(";") { vec![] } else { self.expr_list()? };
                 self.expect_op(";")?;
-                let cond = if self.is_op(";") { None } else { Some(self.expr()?) };
+                let cond = Some(self.expr()?);
                 self.expect_op(";")?;
                 let step = if self.is_op(")") { vec![] } else { self.expr_list()? };
                 self.expect_op(")")?;
-                let body = self.body()?;
+                let body = self.body_or(pos, "Directive missing body");
                 out.push(S { k: SK::For { init, cond, step, body }, pos });
                 return Ok(());
             }
             "while" => {
+                self.expect_after_line_end("(")?;
                 self.expect_op("(")?;
                 let c = self.expr()?;
                 self.expect_op(")")?;
@@ -604,6 +825,9 @@ impl<'a> Parser<'a> {
             "function" | "macro" | "pseudocommand" => {
                 let (name, root) = self.opt_root_ident()?;
                 let mut params = vec![];
+                if d != "pseudocommand" {
+                    self.expect_after_line_end("(")?;
+                }
                 if d == "pseudocommand" {
                     self.skip_nl_in();
                     while let Tok::Ident(p) = self.peek().clone() {
@@ -612,7 +836,7 @@ impl<'a> Parser<'a> {
                         // a line break may come before the ':'; without one the list has ended
                         let after_param = self.p;
                         self.skip_nl_in();
-                        if !self.eat_op(":") {
+                        if !self.eat_op(":") && !(self.pseudo_c3x && self.eat_op(";")) {
                             self.p = after_param;
                             break;
                         }
@@ -633,8 +857,11 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                let body = self.brace_block()?;
-                let f = Rc::new(FuncDef { name, root, params, body, pos });
+                let plain = d == "function";
+                self.no_code += plain as u32;
+                let body = self.brace_block();
+                self.no_code -= plain as u32;
+                let f = Rc::new(FuncDef { name, root, params, body: body?, pos });
                 out.push(S {
                     k: match d {
                         "function" => SK::Function(f),
@@ -670,8 +897,10 @@ impl<'a> Parser<'a> {
                 while self.eat_op(",") {
                     names.push(self.ident()?);
                 }
-                let b = self.brace_block()?;
-                out.push(S { k: SK::Define(names, b), pos });
+                self.no_code += 1;
+                let b = self.brace_block();
+                self.no_code -= 1;
+                out.push(S { k: SK::Define(names, b?), pos });
                 return Ok(());
             }
             "namespace" => {
@@ -709,8 +938,18 @@ impl<'a> Parser<'a> {
                 SK::Import { kind, file, off, len }
             }
             "encoding" => SK::Encoding(self.expr()?),
-            "cpu" => SK::Cpu(self.ident()?),
+            "cpu" => {
+                let Tok::Ident(n) = self.peek().clone() else {
+                    return self.err("Token must be an identifer");
+                };
+                if !CPU_NAMES.contains(&n.as_str()) {
+                    return self.err("Invalid cpu name.");
+                }
+                self.next();
+                SK::Cpu(n)
+            }
             "zp" => {
+                self.expect_after_line_end("{")?;
                 let b = self.brace_block()?;
                 out.push(S { k: SK::Zp(b), pos });
                 return Ok(());
@@ -734,7 +973,7 @@ impl<'a> Parser<'a> {
             "segment" => {
                 let name = self.ident()?;
                 let params = if self.is_op("[") { Some(self.params()?) } else { None };
-                let block = if matches!(self.peek(), Tok::Str(_)) { Some(self.expr()?) } else { None };
+                let block = if self.arg_end() { None } else { Some(self.expr()?) };
                 SK::Segment { name, params, block }
             }
             "segmentdef" => {
@@ -748,7 +987,11 @@ impl<'a> Parser<'a> {
                 if let Tok::Ident(_) = self.peek() {
                     self.next(); // custom writer name: only the built-in writer exists here
                 }
+                let at = self.pos();
                 let params = self.params()?;
+                if !params.iter().any(|(n, _, _)| n == "filename") {
+                    return Err(ParseError { pos: at, msg: "Paremter 'filename' is missing.".into() });
+                }
                 self.skip_nl_in();
                 self.expect_op("{")?;
                 let mut files = vec![];
@@ -778,8 +1021,7 @@ impl<'a> Parser<'a> {
             }
             "plugin" => SK::Plugin(self.expr()?),
             _ => {
-                self.p -= 1;
-                return self.err(&format!("Unknown directive '.{}'", d));
+                return Err(ParseError { pos, msg: "Invalid directive".into() });
             }
         };
         out.push(S { k, pos });
@@ -802,7 +1044,7 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Tok::FileEnd | Tok::Eof => break,
                 Tok::Op("}") => return self.err("Syntax error, unexpected '}'"),
-                _ => self.statement(&mut stmts)?,
+                _ => self.statement_or_skip(&mut stmts),
             }
         }
         Ok(make_block(stmts))
@@ -904,10 +1146,6 @@ impl<'a> Parser<'a> {
                 let e = self.unary()?;
                 Ok(Self::mk(EK::Un("-", Box::new(e)), pos))
             }
-            Tok::Op("+") => {
-                self.next();
-                self.unary()
-            }
             Tok::Op("!") => {
                 self.next();
                 let e = self.unary()?;
@@ -940,7 +1178,7 @@ impl<'a> Parser<'a> {
         loop {
             let pos = self.pos();
             let adj = !self.tok_at(0).sp;
-            if self.is_op(".") && adj {
+            if self.is_op(".") {
                 if let Tok::Ident(n) = self.peek_at(1).clone() {
                     self.p += 2;
                     if self.is_op("(") && !self.tok_at(0).sp {

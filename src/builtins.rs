@@ -26,7 +26,7 @@ fn need_bool(v: &Val, pos: Pos) -> R<bool> {
 }
 /// errors raised inside a built-in operation get the call position in their trace
 fn trace(mut e: AsmError, pos: Pos) -> AsmError {
-    if e.called.is_empty() && e.pos == Some(pos) && !e.msg.starts_with("Unknown function") {
+    if e.called.is_empty() && e.pos == Some(pos) && !e.msg.starts_with("Unknown function") && !e.msg.starts_with("Invalid number") {
         e.called.push(pos);
     }
     e
@@ -40,6 +40,10 @@ fn nf(x: f64, f: u8) -> Val {
 }
 pub fn new_list(v: Vec<Val>) -> Val {
     Val::List(Rc::new(ListV { v: RefCell::new(v), locked: Cell::new(false) }))
+}
+
+fn new_matrix(m: [[f64; 4]; 4]) -> Val {
+    Val::Matrix(Rc::new(RefCell::new(m)))
 }
 
 pub fn parse_sid(file: Vec<u8>, pos: Pos) -> R<SidFile> {
@@ -103,12 +107,18 @@ impl Asm {
             EK::Un(op, a) => {
                 let v = self.eval(a)?;
                 let f = v.flags();
+                if *op != "!" && v.as_f64().is_none() && !matches!(v, Val::Vector(_)) {
+                    return err(pos, format!("Unknown function : {}", op));
+                }
                 match *op {
                     "-" => match v {
                         Val::Vector(x) => Ok(Val::Vector([-x[0], -x[1], -x[2]])),
                         _ => Ok(nf(-need_num(&v, a.pos)?, f)),
                     },
-                    "!" => Ok(Val::Bool(!need_bool(&v, a.pos)?, f)),
+                    "!" => match v {
+                        Val::Bool(..) | Val::Num(_, F_UNK, _) => Ok(Val::Bool(!need_bool(&v, a.pos)?, f)),
+                        _ => err(pos, "Unknown function : !"),
+                    },
                     "~" => Ok(nf(!i(need_num(&v, a.pos)?) as f64, f)),
                     "<" => Ok(nf((i(need_num(&v, a.pos)?) & 0xff) as f64, f & !F_ZP)),
                     _ => Ok(nf(((i(need_num(&v, a.pos)?) >> 8) & 0xff) as f64, f & !F_ZP)),
@@ -117,7 +127,7 @@ impl Asm {
             EK::Bin(op, a, b) => {
                 if *op == "&&" || *op == "||" {
                     let va = self.eval(a)?;
-                    let x = need_bool(&va, a.pos)?;
+                    let x = need_bool(&va, pos)?;
                     if (*op == "&&" && !x) || (*op == "||" && x) {
                         return Ok(Val::Bool(x, va.flags()));
                     }
@@ -157,6 +167,11 @@ impl Asm {
             EK::Field { obj, name } => {
                 let o = self.eval(obj)?;
                 let npos = Pos { col: pos.col + 1, ..pos };
+                if let (Val::Num(_, f, 0), EK::Id { name: id, root }) = (&o, &obj.k) {
+                    if f & (F_UNK | F_FWD) == 0 && self.is_label(id, *root) {
+                        return err(npos, format!("Variable '{}' not present on value of type 'LabelValue'", name));
+                    }
+                }
                 self.field(o, name, npos)
             }
             EK::Index { obj, idx } => {
@@ -178,10 +193,14 @@ impl Asm {
                             if self.pass == 1 || self.lenient {
                                 Ok(self.unknown(pos, "[]"))
                             } else {
-                                err(pos, format!("Index out of range: {}", n))
+                                err(obj.pos, format!("Index out of range: {}", n))
                             }
                         }
                     };
+                }
+                // a loop label that comes later in the source isn't known in the first pass
+                if o.is_unknown() {
+                    return Ok(self.unknown(pos, "[]"));
                 }
                 if let Val::List(l) = &o {
                     return l.v.borrow().get(n as usize).cloned().map_or_else(|| err(pos, format!("Index out of bound : {}", n)), Ok);
@@ -287,6 +306,9 @@ impl Asm {
                     _ => err(pos, format!("Unknown operator '{}' for vectors", op)),
                 }
             }
+            (Val::Vector(_), _) if b.as_f64().is_some() && (op == "+" || op == "-") => {
+                return err(pos, "Can't get a vector from value of type number");
+            }
             (Val::Vector(x), _) if b.as_f64().is_some() => {
                 let k = b.as_f64().unwrap();
                 return match op {
@@ -295,10 +317,14 @@ impl Asm {
                     _ => err(pos, format!("Unknown operator '{}' for vectors", op)),
                 };
             }
-            (Val::Matrix(m), Val::Matrix(n)) if op == "*" => return Ok(Val::Matrix(Box::new(mat_mul(m, n)))),
-            (Val::Matrix(m), Val::Vector(v)) if op == "*" => return Ok(mat_vec(m, v)),
+            (Val::Matrix(m), Val::Matrix(n)) if op == "*" => return Ok(new_matrix(mat_mul(&m.borrow(), &n.borrow()))),
+            (Val::Matrix(m), Val::Vector(v)) if op == "*" => return Ok(mat_vec(&m.borrow(), v)),
             (Val::Matrix(_), _) => return err(pos, format!("Can't multiply a matrix with an object of type {}", tn(b))),
             _ => {}
+        }
+        // the operators are methods of the left value
+        if a.as_f64().is_none() {
+            return err(pos, format!("Unknown function : {}", op));
         }
         let x = need_num(a, pos)?;
         let y = need_num(b, pos)?;
@@ -324,18 +350,22 @@ impl Asm {
         match &o {
             Val::Num(_, f, sc) => {
                 if *sc > 0 {
-                    return self.scope_field(sc - 1, name, pos);
+                    return self.scope_field(sc - 1, name, "LabelValue", pos);
                 }
                 if f & (F_UNK | F_FWD) != 0 {
                     // the label's scope isn't known yet
-                    return Ok(self.unknown(pos, name));
+                    return Ok(self.unknown_member(pos, name));
                 }
-                err(pos, format!("Unknown symbol '{}'", name))
+                err(pos, format!("Variable '{}' not present on value of type 'number'", name))
             }
-            Val::Scope(id) => self.scope_field(*id, name, pos),
+            Val::Scope(id) => {
+                let scope = self.scopes.get(*id as usize).or(self.prev_scopes.get(*id as usize));
+                let ty = if scope.is_some_and(|s| s.ns_name.is_some()) { "Namespace" } else { "ScopeValue" };
+                self.scope_field(*id, name, ty, pos)
+            }
             Val::Struct(d, v) => match d.fields.iter().position(|f| f == name) {
                 Some(i) => Ok(v.borrow()[i].clone()),
-                None => err(pos, format!("Variable '{}' not present on value of type '{}'", name, d.name)),
+                None => err(pos, format!("Variable '{}' not present on value of type 'struct'", name)),
             },
             Val::Picture(p) => match name {
                 "width" => Ok(num(p.w as f64)),
@@ -376,7 +406,7 @@ impl Asm {
 
     fn check_lock(locked: bool, pos: Pos) -> R<()> {
         if locked {
-            return err(pos, "Can't modify a locked value");
+            return err(pos, "You can't modify a locked value");
         }
         Ok(())
     }
@@ -385,9 +415,12 @@ impl Asm {
         let arg = |n: usize| -> R<f64> {
             match a.get(n) {
                 Some(v) => need_num(v, pos),
-                None => err(pos, format!("Missing argument for '{}'", name)),
+                None => err(pos, format!("Invalid number of arguments : {}", name)),
             }
         };
+        if method_arg_count(&o, name).is_some_and(|n| n != a.len()) && !(name == "asNumber" && a.len() == 1) {
+            return err(pos, format!("Invalid number of arguments : {}", name));
+        }
         if name == "string" && a.is_empty() {
             return Ok(s(&o.to_str()));
         }
@@ -430,7 +463,7 @@ impl Asm {
                             }
                         }
                     }
-                    _ => return err(pos, format!("Unknown function '{}' on a String", name)),
+                    _ => return err(pos, format!("Unknown function : {}", name)),
                 });
             }
             Val::List(l) => {
@@ -507,13 +540,12 @@ impl Asm {
                         l.locked.set(true);
                         o.clone()
                     }
-                    _ => return err(pos, format!("Unknown function '{}' on a List", name)),
+                    _ => return err(pos, format!("Unknown function : {}", name)),
                 });
             }
             Val::Hash(h) => {
                 return Ok(match name {
                     "put" => {
-                        Self::check_lock(h.locked.get(), pos)?;
                         let mut it = a.chunks(2);
                         for kv in &mut it {
                             let k = kv[0].to_str();
@@ -548,7 +580,7 @@ impl Asm {
                         h.locked.set(true);
                         o.clone()
                     }
-                    _ => return err(pos, format!("Unknown function '{}' on a Hashtable", name)),
+                    _ => return err(pos, format!("Unknown function : {}", name)),
                 });
             }
             Val::Struct(d, v) => {
@@ -583,7 +615,7 @@ impl Asm {
                         v.borrow_mut()[k] = val.clone();
                         val
                     }
-                    _ => return err(pos, format!("Unknown function '{}' on a struct", name)),
+                    _ => return err(pos, format!("Unknown function : {}", name)),
                 });
             }
             Val::Vector(v) => {
@@ -596,7 +628,7 @@ impl Asm {
                         Some(Val::Vector(w)) => Val::Vector([v[1] * w[2] - v[2] * w[1], v[2] * w[0] - v[0] * w[2], v[0] * w[1] - v[1] * w[0]]),
                         _ => return err(pos, "X needs a vector"),
                     },
-                    _ => return err(pos, format!("Unknown function '{}' on a Vector", name)),
+                    _ => return err(pos, format!("Unknown function : {}", name)),
                 });
             }
             Val::Matrix(m) => {
@@ -605,21 +637,19 @@ impl Asm {
                     return err(pos, format!("Index out of bound ({},{})", r, c));
                 }
                 return match name {
-                    "get" => Ok(num(m[r][c])),
-                    // matrices are values: set returns a changed copy
+                    "get" => Ok(num(m.borrow()[r][c])),
                     "set" => {
-                        let mut n = m.clone();
-                        n[r][c] = arg(2)?;
-                        Ok(Val::Matrix(n))
+                        m.borrow_mut()[r][c] = arg(2)?;
+                        Ok(o.clone())
                     }
-                    _ => err(pos, format!("Unknown function '{}' on a Matrix", name)),
+                    _ => err(pos, format!("Unknown function : {}", name)),
                 };
             }
             Val::Arg(t, v) => {
                 return match name {
                     "getType" => Ok(num(*t as f64)),
                     "getValue" => Ok((**v).clone()),
-                    _ => err(pos, format!("Unknown function '{}' on a command argument", name)),
+                    _ => err(pos, format!("Unknown function : {}", name)),
                 }
             }
             Val::Binary(b) => {
@@ -628,10 +658,10 @@ impl Asm {
                     let rest = rest.strip_suffix("Size").map(|r| (r, true)).unwrap_or((rest, false));
                     match b.blocks.iter().find(|(n, _, _)| n == rest.0) {
                         Some((_, st, ln)) => (*st, *ln, if rest.1 { "size" } else if name.starts_with("uget") { "uget" } else { "get" }),
-                        None => return err(pos, format!("Unknown function '{}' on a binary file", name)),
+                        None => return err(pos, format!("Unknown function : {}", name)),
                     }
                 } else {
-                    return err(pos, format!("Unknown function '{}' on a binary file", name));
+                    return err(pos, format!("Unknown function : {}", name));
                 };
                 if fname == "size" {
                     return Ok(num(blk_len as f64));
@@ -677,7 +707,7 @@ impl Asm {
                         }
                         Ok(num(r as f64))
                     }
-                    _ => err(pos, format!("Unknown function '{}' on a picture", name)),
+                    _ => err(pos, format!("Unknown function : {}", name)),
                 };
             }
             Val::Sid(sd) => {
@@ -714,7 +744,7 @@ impl Asm {
         if o.is_unknown() {
             return Ok(Val::Num(0.0, F_UNK, 0));
         }
-        err(pos, format!("Unknown function '{}' on a value of type {}", name, tn(&o)))
+        err(pos, format!("Unknown function : {}", name))
     }
 
     pub fn call(&mut self, name: &str, root: bool, a: Vec<Val>, pos: Pos) -> R<Val> {
@@ -745,13 +775,13 @@ impl Asm {
         let n = |k: usize| -> R<f64> {
             match a.get(k) {
                 Some(v) => need_num(v, pos),
-                None => err(pos, "Invalid number of arguments"),
+                None => err(pos, format!("Invalid number of arguments for function '{}'", name)),
             }
         };
         let argc = a.len();
         let m1 = |f: fn(f64) -> f64| -> R<Val> {
             if argc != 1 {
-                return err(pos, "Invalid number of arguments");
+                return err(pos, format!("Invalid number of arguments for function '{}'", name));
             }
             Ok(nf(f(n(0)?), fl))
         };
@@ -819,37 +849,37 @@ impl Asm {
             }
             "Hashtable" => Ok(Val::Hash(Rc::new(HashV { v: RefCell::new(vec![]), locked: Cell::new(false) }))),
             "Vector" => Ok(Val::Vector([n(0)?, n(1)?, n(2)?])),
-            "Matrix" | "IdentityMatrix" => Ok(Val::Matrix(Box::new(ident()))),
+            "Matrix" => Ok(new_matrix(ident())),
             "RotationMatrix" => {
                 let (ax, ay, az) = (n(0)?, n(1)?, n(2)?);
                 let (cx, sx, cy, sy, cz, sz) = (ax.cos(), ax.sin(), ay.cos(), ay.sin(), az.cos(), az.sin());
-                Ok(Val::Matrix(Box::new([
+                Ok(new_matrix([
                     [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx, 0.0],
                     [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx, 0.0],
                     [-sy, cy * sx, cy * cx, 0.0],
                     [0.0, 0.0, 0.0, 1.0],
-                ])))
+                ]))
             }
             "ScaleMatrix" => {
                 let mut m = ident();
                 m[0][0] = n(0)?;
                 m[1][1] = n(1)?;
                 m[2][2] = n(2)?;
-                Ok(Val::Matrix(Box::new(m)))
+                Ok(new_matrix(m))
             }
             "MoveMatrix" => {
                 let mut m = ident();
                 m[0][3] = n(0)?;
                 m[1][3] = n(1)?;
                 m[2][3] = n(2)?;
-                Ok(Val::Matrix(Box::new(m)))
+                Ok(new_matrix(m))
             }
             "PerspectiveMatrix" => {
                 let mut m = ident();
                 m[2][2] = 0.0;
                 m[3][2] = 1.0 / n(0)?;
                 m[3][3] = 0.0;
-                Ok(Val::Matrix(Box::new(m)))
+                Ok(new_matrix(m))
             }
             "CmdArgument" => Ok(Val::Arg(n(0)? as i32, Box::new(a.get(1).cloned().unwrap_or(Val::Null)))),
             "asmCommandSize" => Ok(num(self.opcode_size(n(0)? as i64) as f64)),
@@ -861,7 +891,7 @@ impl Asm {
             }
             "LoadBinary" => {
                 if argc == 0 || argc > 2 {
-                    return err(pos, "Invalid number of arguments");
+                    return err(pos, format!("Invalid number of arguments for function '{}'", name));
                 }
                 let data = self.read_file(&a[0].to_str(), pos)?;
                 let tpl = if argc > 1 { a[1].to_str() } else { String::new() };
@@ -873,10 +903,13 @@ impl Asm {
             }
             "LoadPicture" => {
                 if argc == 0 || argc > 2 {
-                    return err(pos, "Invalid number of arguments");
+                    return err(pos, format!("Invalid number of arguments for function '{}'", name));
                 }
                 let fname = a[0].to_str();
-                let data = self.read_file(&fname, pos)?;
+                let data = self.read_file(&fname, pos).map_err(|mut e| {
+                    e.msg = format!("Can't locate file '{}'", fname);
+                    e
+                })?;
                 let (w, h, px) = match crate::jpeg::decode(&data) {
                     Some(x) => x,
                     None => {
@@ -925,7 +958,7 @@ impl Asm {
             }
             _ => {
                 if self.has_function_name(name, root) {
-                    return err(pos, format!("The function '{}' doesn't take {} arguments", name, argc));
+                    return err(pos, format!("Invalid number of arguments for function '{}'", name));
                 }
                 if self.find_macro_any(name) {
                     return err(pos, format!("'{}' is a macro and can't be used in an expression", name));
@@ -979,3 +1012,24 @@ pub fn load_binary(data: Vec<u8>, tpl: &str, pos: Pos) -> R<BinFile> {
     Ok(BinFile { data, offset, blocks })
 }
 
+/// The number of arguments of a method, observed by running KickAss.jar 5.25.
+fn method_arg_count(o: &Val, name: &str) -> Option<usize> {
+    let n = match (o, name) {
+        (_, "string") => 0,
+        (Val::Str(_), "size" | "toLowerCase" | "toUpperCase" | "asBoolean" | "asNumber" | "number") => 0,
+        (Val::Str(_), "charAt") => 1,
+        (Val::Str(_), "substring") => 2,
+        (Val::List(_), "size" | "shuffle" | "reverse" | "sort" | "lock") => 0,
+        (Val::List(_), "get" | "addAll" | "remove") => 1,
+        (Val::List(_), "set") => 2,
+        (Val::Hash(_), "keys" | "lock") => 0,
+        (Val::Hash(_), "get" | "containsKey" | "remove") => 1,
+        (Val::Vector(_), "getX" | "getY" | "getZ") => 0,
+        (Val::Vector(_), "get" | "X") => 1,
+        (Val::Matrix(_), "get") => 2,
+        (Val::Matrix(_), "set") => 3,
+        (Val::Num(..) | Val::Char(..), "number") => 0,
+        _ => return None,
+    };
+    Some(n)
+}

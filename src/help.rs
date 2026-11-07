@@ -190,7 +190,7 @@ Numbers to text
 
 Creating values
   List(n)  Hashtable()  Vector(x, y, z)
-  Matrix()  IdentityMatrix()  RotationMatrix(aX, aY, aZ)  ScaleMatrix(x, y, z)
+  Matrix()  RotationMatrix(aX, aY, aZ)  ScaleMatrix(x, y, z)
   MoveMatrix(x, y, z)  PerspectiveMatrix(z)
   CmdArgument(type, value)     a pseudocommand argument
 

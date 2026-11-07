@@ -125,7 +125,7 @@ impl App {
         o.no_output = !self.write_files || self.path.is_none();
         let log = Log::new(false);
         self.outcome = driver::assemble(&o, Some(&self.text), &log);
-        self.log = log.lines.borrow().clone();
+        self.log = log.lines.lock().unwrap().clone();
         if !self.outcome.ok && self.tab != Tab::Log {
             self.tab = Tab::Log;
         }

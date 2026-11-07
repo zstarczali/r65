@@ -6,10 +6,9 @@ use crate::lexer::lex;
 use crate::output;
 use crate::parser::Parser;
 use crate::preproc::Pre;
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const APP_NAME: &str = "R65";
@@ -77,6 +76,15 @@ pub struct Options {
     pub log_file: Option<PathBuf>,
     pub replace: Vec<(PathBuf, PathBuf)>,
     pub max_diag: usize,
+    pub asminfo: Option<String>,
+    pub asminfo_file: Option<String>,
+    pub asminfo_stdout: bool,
+    pub cfg_files: Vec<PathBuf>,
+    pub debug_dump: bool,
+    pub execute_log: Option<PathBuf>,
+    pub pseudo_c3x: bool,
+    /// for the log, right after the start-up text
+    pub warnings_at_start: Vec<String>,
 }
 
 impl Default for Options {
@@ -108,6 +116,14 @@ impl Default for Options {
             log_file: None,
             replace: vec![],
             max_diag: 5,
+            asminfo: None,
+            asminfo_file: None,
+            asminfo_stdout: false,
+            cfg_files: vec![],
+            debug_dump: false,
+            execute_log: None,
+            pseudo_c3x: false,
+            warnings_at_start: vec![],
         }
     }
 }
@@ -126,6 +142,10 @@ pub const HELP: &str = "Usage: r65 <file.asm> [options]
   -symbolfiledir <dir> folder for the symbol file
   -bytedump            write ByteDump.txt (address, bytes and source line)
   -bytedumpfile <file> the same with a file name
+  -debugdump           write a .dbg file that maps bytes to source lines, for C64 Debugger
+  -asminfo <sections>  write assembly information for editors, like all or files|errors
+  -asminfofile <file>  file for -asminfo (default asminfo.txt)
+  -asminfotostdout     print the -asminfo text instead of writing a file
   -define <name>       define a preprocessor symbol
   -libdir <dir>        extra folder to search for imported files
   -fillbyte <n>        byte used for gaps between memory blocks
@@ -138,8 +158,12 @@ pub const HELP: &str = "Usage: r65 <file.asm> [options]
   -warningsoff         don't print warnings
   -noeval              only parse the source
   -time                print how long it took
+  -debug               accepted; the original prints more about its own crashes here
   -log <file>          also write the log to a file
   -execute <cmd>       run a program with the output file on success
+  -executelog <file>   send the output of the -execute program to a file
+  -cfgfile <file>      read more options from a file, relative to the source file
+  -pseudoc3x           a semicolon separates pseudocommand arguments, as in Kick Assembler 3
   -replacefile <a> <b> use file b wherever file a is imported
   -maxdiag <n>         how many errors/warnings to list (default 5)
   :name=value          a value for the script hashtable cmdLineVars
@@ -147,8 +171,43 @@ pub const HELP: &str = "Usage: r65 <file.asm> [options]
   --screenshot <png>   open the window, save a picture of it and quit
   -h, --help [topic]   this help; r65 --help lists all topics";
 
-/// Parses command line options. Returns the options or an error text.
+/// The options in a config file: one or more per line, `#` and `//` start a comment line.
+pub fn cfg_text_args(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"))
+        .flat_map(|l| l.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>())
+        .collect()
+}
+
+/// Parses command line options, also those of `-cfgfile` files. Returns the options or an error text.
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut all = args.to_vec();
+    let mut read: Vec<PathBuf> = vec![];
+    let mut missing: Vec<String> = vec![];
+    loop {
+        let mut o = parse_once(&all)?;
+        let base = o.file.as_ref().and_then(|f| f.parent().map(|p| p.to_path_buf())).unwrap_or_default();
+        let next = o.cfg_files.iter().find(|f| !read.contains(&base.join(f))).cloned();
+        let Some(name) = next else {
+            o.warnings_at_start.extend(missing);
+            return Ok(o);
+        };
+        let path = base.join(&name);
+        read.push(path.clone());
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                // like r65.cfg these are defaults: the command line comes after them and wins
+                let mut merged = cfg_text_args(&text);
+                merged.append(&mut all);
+                all = merged;
+            }
+            Err(_) => missing.push(format!("Warning. Can't find configfile : {}", name.display())),
+        }
+    }
+}
+
+fn parse_once(args: &[String]) -> Result<Options, String> {
     let mut o = Options::default();
     let mut i = 0;
     let need = |i: &mut usize, name: &str| -> Result<String, String> {
@@ -176,9 +235,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
         } else if !a.starts_with('-') {
             if o.file.is_some() {
-                return Err(format!("Only one source file can be given ('{}')", a));
+                o.warnings_at_start.push(format!("Warning. Already have an inputfile. Won't use '{}'", a));
+            } else {
+                o.file = Some(PathBuf::from(&a));
             }
-            o.file = Some(PathBuf::from(&a));
         } else {
             match low.as_str() {
                 "-o" => o.out_file = Some(need(&mut i, &a)?),
@@ -221,6 +281,20 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     o.replace.push((PathBuf::from(x), PathBuf::from(y)))
                 }
                 "-maxdiag" => o.max_diag = num(&need(&mut i, &a)?)?.max(1) as usize,
+                "-asminfo" => {
+                    let sel = need(&mut i, &a)?;
+                    for bad in crate::asminfo::unknown_selections(&sel) {
+                        o.warnings_at_start.push(format!("Invalid asminfo type: {}", bad));
+                    }
+                    o.asminfo = Some(sel)
+                }
+                "-asminfofile" => o.asminfo_file = Some(need(&mut i, &a)?),
+                "-asminfotostdout" => o.asminfo_stdout = true,
+                "-cfgfile" => o.cfg_files.push(PathBuf::from(need(&mut i, &a)?)),
+                "-debug" => {}
+                "-debugdump" => o.debug_dump = true,
+                "-executelog" => o.execute_log = Some(PathBuf::from(need(&mut i, &a)?)),
+                "-pseudoc3x" => o.pseudo_c3x = true,
                 _ => return Err(format!("Unknown option '{}'", a)),
             }
         }
@@ -231,19 +305,19 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
 
 #[derive(Clone)]
 pub struct Log {
-    pub lines: Rc<RefCell<Vec<String>>>,
+    pub lines: Arc<Mutex<Vec<String>>>,
     pub echo: bool,
 }
 
 impl Log {
     pub fn new(echo: bool) -> Self {
-        Log { lines: Rc::new(RefCell::new(vec![])), echo }
+        Log { lines: Arc::new(Mutex::new(vec![])), echo }
     }
     pub fn say(&self, s: &str) {
         if self.echo {
             println!("{}", s);
         }
-        self.lines.borrow_mut().push(s.to_string());
+        self.lines.lock().unwrap().push(s.to_string());
     }
 }
 
@@ -263,13 +337,21 @@ pub struct Outcome {
     pub blocks: Vec<MemBlock>,
     pub image: Option<(i64, Vec<u8>)>,
     pub passes: u32,
+    /// for -asminfo: source files, syntax entries, and the index of the file with the error
+    pub files: Vec<String>,
+    pub syntax: Vec<crate::asminfo::SyntaxEntry>,
+    /// every error: file index, line, column, the column where its word ends, message
+    pub errors: Vec<(usize, u32, u32, u32, String)>,
 }
+
+/// Scripts can recurse deeply (see MAX_CALL_DEPTH), and each script call takes many Rust calls.
+const ASSEMBLE_STACK_BYTES: usize = 1 << 30;
 
 /// file names in messages are shown relative to the main source file's folder
 fn rel_name(p: &str, base: &Path) -> String {
     let b = base.to_string_lossy().to_string();
     if !b.is_empty() && p.starts_with(&b) && p.len() > b.len() + 1 {
-        return p[b.len() + 1..].to_string();
+        return p[b.len() + 1..].replace('/', std::path::MAIN_SEPARATOR_STR);
     }
     p.to_string()
 }
@@ -292,6 +374,9 @@ pub fn error_text(asm: &Asm, e: &AsmError) -> String {
             s.push_str(&t.trim_end_matches('\r').replace('\t', " "));
             s.push('\n');
         }
+    }
+    if e.msg == "Unexpected end of source" {
+        s.push_str("<EOF>\n");
     }
     s.push_str(&" ".repeat(p.col.saturating_sub(1) as usize));
     s.push_str("^\n\n");
@@ -324,11 +409,57 @@ fn banner(log: &Log) {
     }
 }
 
+fn info_entry(asm: &Asm, e: &AsmError) -> (usize, u32, u32, u32, String) {
+    match e.pos {
+        Some(p) => (p.file, p.line, p.col, word_end_col(asm, p), e.msg.clone()),
+        None => (0, 0, 0, 0, e.msg.clone()),
+    }
+}
+
+fn word_end_col(asm: &Asm, p: Pos) -> u32 {
+    let Some(text) = asm.src.files.get(p.file).and_then(|f| f.lines.get(p.line.saturating_sub(1) as usize)) else { return p.col };
+    let rest: Vec<char> = text.chars().skip(p.col.saturating_sub(1) as usize).collect();
+    let word = |r: &[char]| r.iter().take_while(|c| c.is_alphanumeric() || **c == '_').count() as u32;
+    let n = if rest.first() == Some(&'"') {
+        rest.iter().skip(1).position(|c| *c == '"').map_or(0, |i| i + 1) as u32
+    } else if rest.first() == Some(&'.') {
+        word(&rest[1..])
+    } else {
+        (rest.iter().take_while(|c| c.is_alphanumeric() || **c == '_').count() as u32).saturating_sub(1)
+    };
+    p.col + n
+}
+
 /// Assembles `o.file` (or `text` when given, using `o.file` as its name).
 pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
+    let out = std::thread::scope(|s| {
+        let job = std::thread::Builder::new().stack_size(ASSEMBLE_STACK_BYTES).spawn_scoped(s, || assemble_here(o, text, log));
+        match job {
+            Ok(h) => h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            Err(_) => assemble_here(o, text, log),
+        }
+    });
+    if let Some(sel) = &o.asminfo {
+        let info = crate::asminfo::text(sel, &out);
+        if o.asminfo_stdout {
+            println!("\n### ASMINFO START ###\n{}### ASMINFO END ###", info.replace("\r\n", "\n"));
+        } else if !o.no_output {
+            let name = o.asminfo_file.clone().unwrap_or_else(|| "asminfo.txt".into());
+            if let Err(e) = std::fs::write(&name, info) {
+                log.say(&format!("Error: Can't write '{}': {}", name, e));
+            }
+        }
+    }
+    out
+}
+
+fn assemble_here(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
     let t0 = Instant::now();
     let mut out = Outcome::default();
     banner(log);
+    for w in &o.warnings_at_start {
+        log.say(w);
+    }
     let Some(file) = o.file.clone() else {
         log.say("Error: No input file given.");
         log.say("");
@@ -396,6 +527,31 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
             None => (String::new(), 0, 0),
         };
         out.error = Some((f, l, c, e.msg.clone()));
+        out.errors.push(info_entry(asm, &e));
+        out.files = (0..asm.src.files.len()).map(|i| asm.src.full(i)).collect();
+    };
+    // more than one error: all are listed, and the first is shown in detail
+    let fail_all = |asm: &Asm, mut errors: Vec<AsmError>, out: &mut Outcome, early: bool| {
+        if errors.len() > 1 {
+            log.say(&format!("Got {} errors and {} warnings while executing:", errors.len(), asm.warnings.len()));
+            for e in errors.iter().take(o.max_diag) {
+                match e.pos {
+                    // this list shows the whole path, unlike the text under it
+                    Some(p) => log.say(&format!("  ({} {}:{}) Error: {}", asm.src.full(p.file).replace('/', std::path::MAIN_SEPARATOR_STR), p.line, p.col, e.msg)),
+                    None => log.say(&format!("  Error: {}", e.msg)),
+                }
+            }
+            if errors.len() > o.max_diag {
+                log.say("  ...");
+            }
+        }
+        let rest = errors.split_off(1);
+        if let Some(first) = errors.pop() {
+            fail(asm, first, out, early);
+        }
+        for e in &rest {
+            out.errors.push(info_entry(asm, e));
+        }
     };
 
     // preprocess the built-in macros and the source
@@ -408,25 +564,38 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
     let lines = match pre_res {
         Ok(l) => l,
         Err(e) => {
-            fail(&asm, AsmError { pos: Some(Pos { file: e.file, line: e.line, col: 1 }), msg: e.msg, called: vec![] }, &mut out, true);
+            // #import points at its file name, the .import source directive at itself
+            let line = asm.src.files.get(e.file).and_then(|f| f.lines.get(e.line.saturating_sub(1) as usize));
+            let col = line.filter(|t| t.trim_start().starts_with('#') && e.msg.starts_with("Can't open file")).and_then(|t| t.find('"')).map_or(1, |i| i as u32 + 1);
+            fail(&asm, AsmError { pos: Some(Pos { file: e.file, line: e.line, col }), msg: e.msg, called: vec![] }, &mut out, true);
             return out;
         }
     };
-    let toks = match lex(&lines) {
-        Ok(t) => t,
-        Err(e) => {
-            fail(&asm, AsmError { pos: Some(Pos { file: e.file, line: e.line, col: e.col }), msg: e.msg, called: vec![] }, &mut out, true);
-            return out;
-        }
-    };
+    let (toks, lex_errors) = lex(&lines);
     let mn = all_mnemonics();
-    let prog = match Parser::new(&toks, &mn).program() {
-        Ok(p) => p,
-        Err(e) => {
-            fail(&asm, AsmError { pos: Some(e.pos), msg: e.msg, called: vec![] }, &mut out, true);
-            return out;
-        }
-    };
+    out.files = (0..asm.src.files.len()).map(|i| asm.src.full(i)).collect();
+    out.syntax = crate::asminfo::syntax(&toks, &asm.src, &mn);
+    let mut parser = Parser::new(&toks, &mn).pseudo_c3x(o.pseudo_c3x);
+    let prog = parser.program();
+    // the errors of the lexer and the parser in source order, then those of the names
+    let mut early: Vec<(usize, u8, AsmError)> = vec![];
+    for d in lex_errors {
+        early.push((d.key, 0, AsmError { pos: Some(Pos { file: d.err.file, line: d.err.line, col: d.err.col }), msg: d.err.msg, called: vec![] }));
+    }
+    for (key, e) in std::mem::take(&mut parser.errors) {
+        early.push((key, 1, AsmError { pos: Some(e.pos), msg: e.msg, called: vec![] }));
+    }
+    early.sort_by_key(|e| (e.0, e.1));
+    let mut errors: Vec<AsmError> = early.into_iter().map(|e| e.2).collect();
+    if !o.no_eval {
+        let report = crate::names::check(&prog, &|n: &str| asm.consts.contains_key(n));
+        errors.extend(report.errors);
+        asm.declared = report.declared;
+    }
+    if !errors.is_empty() {
+        fail_all(&asm, errors, &mut out, true);
+        return out;
+    }
     if o.no_eval {
         log.say("Preparse done and no evaluation requested. Exiting.");
         out.ok = true;
@@ -446,8 +615,11 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
     for p in asm.prints.clone() {
         log.say(&format!("  {}", p));
     }
-    if let Err(e) = asm.check_overlap() {
-        fail(&asm, e, &mut out, false);
+    let mut errors = asm.check_overlap();
+    errors.extend(asm.check_all_limits());
+    if !errors.is_empty() {
+        let early = errors[0].msg.starts_with("Subsegment");
+        fail_all(&asm, errors, &mut out, early);
         return out;
     }
     // collect the memory blocks for the window
@@ -468,19 +640,17 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
         None => format!("{}{}", base, if o.binfile { ".bin" } else { ".prg" }),
     };
     let oo = output::OutOpts { out_file: PathBuf::from(&out_file), binfile: o.binfile, mbfiles: o.mbfiles, fill_byte: o.fill_byte, dry: o.no_output };
-    match output::write_outputs(&mut asm, &oo) {
-        Ok(lines) => {
-            for l in lines {
-                log.say(&l);
-            }
-        }
-        Err(e) => {
-            fail(&asm, e, &mut out, false);
-            return out;
-        }
+    let mut written = vec![];
+    let result = output::write_outputs(&mut asm, &oo, &mut written);
+    for l in written {
+        log.say(&l);
+    }
+    if let Err(e) = result {
+        fail(&asm, e, &mut out, false);
+        return out;
     }
     if o.show_mem {
-        for l in output::memory_map(&asm).lines() {
+        for l in output::memory_map(&mut asm).lines() {
             log.say(l);
         }
     }
@@ -505,6 +675,12 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
             if let Err(e) = std::fs::write(&p, txt) {
                 log.say(&format!("Error: Can't write '{}': {}", p.display(), e));
             }
+        }
+    }
+    if o.debug_dump && !o.no_output {
+        let p = out_dir.join(format!("{}.dbg", base));
+        if let Err(e) = std::fs::write(&p, output::debug_dump(&asm)) {
+            log.say(&format!("Error: Can't write '{}': {}", p.display(), e));
         }
     }
     if o.time {
@@ -546,8 +722,20 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
             if let Some(prog) = parts.next() {
                 let mut c = std::process::Command::new(prog);
                 c.args(parts).arg(&target);
+                // the program keeps running after the assembler stops, also with a log file
+                if let Some(lf) = &o.execute_log {
+                    match std::fs::File::create(lf) {
+                        Ok(f) => {
+                            if let Ok(f2) = f.try_clone() {
+                                c.stderr(f2);
+                            }
+                            c.stdout(f);
+                        }
+                        Err(e) => log.say(&format!("Error: Can't write '{}': {}", lf.display(), e)),
+                    }
+                }
                 if let Err(e) = c.spawn() {
-                    log.say(&format!("Error: Couldn't run '{}': {}", cmd, e));
+                    log.say(&format!("Error while executing external program: {}", e));
                 }
             }
         }
