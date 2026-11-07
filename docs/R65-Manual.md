@@ -506,10 +506,12 @@ pass, a label used before its definition takes its value from the pass before. T
 known and stable.
 
 - **Labels can be used anywhere in their scope**, also before their definition. **`.var` and `.const` can only be used
-  after their declaration**; before it they report `Unknown symbol`.
+  after their declaration**; before it they report `Reference to not yet defined symbol 'x'`. A macro or function body that
+  runs before the declaration can reach the name: a `.var` is `null` there, and a `.const` reports `Symbol is not yet initialized`.
 - Addresses can depend on values defined later: `.fill later, 0` works when `later` is defined below.
-- A name that's used but never declared anywhere is reported right after the first pass:
-  `Unknown symbol 'name'`.
+- **All names are checked before the first pass**, also those in macros that are never called and in false `.if` branches:
+  `Unknown symbol 'name'`, `Unknown function 'name'`, `Macro command 'name' not defined`. `.asserterror` is the exception, because
+  its names are only checked when it runs.
 - **`.print` runs once**, in the output pass. **`.printnow` prints in every pass**, which helps to debug the passes.
 - A program that never settles fails with `Made no progress and can't solve the program`.
 
@@ -1568,7 +1570,13 @@ at line 2, column 5 in game.asm
 
 | Message | Usual cause |
 |---|---|
-| `Unknown symbol 'x'` | A misspelled name, one that's defined in an inner scope, or a `.var` used before its declaration |
+| `Unknown symbol 'x'` | A misspelled name, or one that's defined in an inner scope |
+| `Reference to not yet defined symbol 'x'` | A `.var`, `.const` or `.enum` value used before its declaration |
+| `Syntax error` | The text can't be read as code. There's no unary plus, so `.byte +1` is one too |
+| `Invalid token`, `Invalid directive` | A line that can't start like this, an unknown directive, or code inside a function or `.define` |
+| `If without body`, `Else without body`, `Directive missing body` | The one statement after `.if`, `else` or `.for` has an error |
+| `Can't define a macro here. ...` | A macro, function or pseudocommand inside `{ }`, `.if`, `.for` and so on |
+| `Undefined segment 'x'` | `.segment x` without parameters and without an earlier definition |
 | `The symbol 'x' is already defined` | The same name twice in a scope |
 | `Can't assign to 'x' since it isn't a variable` | Assigning to a label or `.const` |
 | `Pseudo command 'x' not defined` | An upper case mnemonic, or a missing definition |
@@ -1584,10 +1592,20 @@ at line 2, column 5 in game.asm
 | `relative address is illegal (jump distance is too far: n).` | Use `jmp`, or invert the branch |
 | `Can't get a double representation from a value of type String` | A number on the left of `+` and a string on the right, or a string in `.byte` |
 | `Can't get a boolean representation from a value of type Number` | `.if (1)`; write a comparison |
-| `Can't output bytes inside a function or a .define block` | Use a macro |
 | `In segment 'X' the memoryblock 'A' (...) overlaps 'B' (...)` | Two blocks at the same address |
 | `Can't open file: x`, `Can't open file 'x'` | Check the path and `-libdir` |
 | `Too deep recursion` | A macro or function that never stops calling itself. R65's own text: the original stops with a Java `StackOverflowError` |
+
+With several errors, R65 lists them first, up to 5 and then `  ...`, and describes the first one:
+
+```text
+Got 2 errors and 0 warnings while executing:
+  (C:\work\main.asm 1:5) Error: Unknown symbol 'foo'
+  (C:\work\main.asm 2:5) Error: Unknown symbol 'bar'
+```
+
+First come the errors of reading the source in source order, then names defined twice or in the wrong place, then unknown names.
+`-asminfo errors` has all of them.
 
 ## 22. Limitations
 
@@ -1612,13 +1630,12 @@ something else, R65 does what the program does:
 
 ### Differences from the original program
 
-- With several errors, the original lists them all first (`Got 2 errors and 0 warnings while executing:`). R65 stops at the first
-  one, which is the one that the original describes in detail.
-- The original checks names before the first pass, so `lda nosuch` in a macro that's never called is an error there. R65 only
-  checks the code it runs, and an unknown function or a wrong number of arguments in other code isn't found either.
-- A method called with too many arguments is an error in the original, while R65 ignores the extra ones.
 - An endless recursion stops with R65's own error, and a recursion of 2000 levels works where the original runs out of stack.
-- The number of `flex pass` lines can differ when a segment starts after another one, or when a label moves that nothing uses.
+- The number of `flex pass` lines can differ when a segment starts after another one, when a name is missing from a namespace that's
+  defined later, and in some programs that use many macros. In those programs, labels of the same name can also get other `__n`
+  numbers in the `.vs` file, and the lines can come in another order. The program bytes were the same.
+- After an error in text that isn't Kick Assembler code at all, R65 skips the rest of the statement, while the original can report more errors
+  on that line. A source of another assembler therefore gets another list of errors.
 - `-asminfo`: `[version]` has R65's version, the texts of the directives are R65's own, the `syntax` entries are in another order
   and those of the built-in macros are left out. The built-in file is named `r65:autoinclude.asm`.
 - A `//` line in a `-cfgfile` file is skipped, while the original warns about its words.

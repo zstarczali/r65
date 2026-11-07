@@ -128,9 +128,11 @@ impl Default for Options {
     }
 }
 
-pub const HELP: &str = "Usage: r65 <file.asm> [options]
-  (a command line tool; --gui [file] opens an optional editor window)
+pub const HELP: &str = "Usage:
+  r65 <file.asm> [OPTIONS]
+  r65 --gui [file.asm]
 
+Options:
   -o <file>            name of the output file
   -odir <dir>          folder for the output files
   -binfile             write a raw .bin file without the 2 byte start address
@@ -387,6 +389,11 @@ pub fn error_text(asm: &Asm, e: &AsmError) -> String {
         s.push_str(&format!("called {}\n", pos_string(asm, c)));
     }
     s
+}
+
+/// The first lines of the help.
+pub fn help_title() -> String {
+    format!("{} \u{2013} {} v{}\n{}", APP_NAME, DESCRIPTION, VERSION, COPYRIGHT)
 }
 
 /// The start-up text: name, description, version and copyright, centred in 54 columns.

@@ -583,3 +583,102 @@ fn segmentout_takes_a_second_pass() {
     assert!(r.has_line("flex pass 2"), "{}", r.out);
 }
 
+// ---------------------------------------------------------------- the check before the first pass
+
+#[test]
+fn all_errors_are_listed() {
+    fails("lda foo\nlda bar", "Got 2 errors and 0 warnings while executing:");
+    fails("lda foo\nlda bar", "t.asm 1:5) Error: Unknown symbol 'foo'");
+    fails("lda foo\nlda bar", "t.asm 2:5) Error: Unknown symbol 'bar'");
+    fails("foo\nbar", "Got 2 errors and 0 warnings while executing:");
+    fails("x: nop\nx: nop\ny: nop\ny: nop", "Got 2 errors and 0 warnings while executing:");
+    fails(".var q = 1 +\n2", "Got 2 errors and 0 warnings while executing:");
+    fails("a\nb\nc\nd\ne\nf\ng", "Got 7 errors and 0 warnings while executing:");
+    fails("a\nb\nc\nd\ne\nf\ng", "Pseudo command 'e' not defined\n  ...");
+}
+
+#[test]
+fn names_in_code_that_never_runs() {
+    fails(".macro m() {\nlda foo\n}", "Unknown symbol 'foo'");
+    fails(".if (false) { lda foo }", "Unknown symbol 'foo'");
+    fails(".if (false) { foo() }", "Macro command 'foo' not defined");
+    fails(".if (false) { .print foo() }", "Unknown function 'foo'");
+    fails(".if (false) { .print sin(1,2) }", "Invalid number of arguments for function 'sin'");
+}
+
+#[test]
+fn unknown_names_come_before_other_errors() {
+    let p = Project::new();
+    let r = p.asm("lda foo\nlda #\"x\"", &["-nooutput"]);
+    assert!(r.out.contains("Unknown symbol 'foo'"), "{}", r.out);
+    assert!(!r.out.contains("flex pass"), "{}", r.out);
+}
+
+#[test]
+fn too_many_arguments_for_a_method() {
+    fails(".print List().add(1).size(1)", "Invalid number of arguments : size");
+    fails(".print \"abc\".substring(1)", "Invalid number of arguments : substring");
+}
+
+#[test]
+fn asserterror_names_are_checked_when_it_runs() {
+    prints(".asserterror \"x\", foo", &["x -- OK. | Unknown symbol 'foo'"]);
+    prints(".asserterror \"x\", { lda foo }", &["x -- OK. | Unknown symbol 'foo'"]);
+}
+
+#[test]
+fn variables_and_constants_before_their_declaration() {
+    fails(".print x\n.var x = 1", "Reference to not yet defined symbol 'x'");
+    fails(".var x = x", "Reference to not yet defined symbol 'x'");
+    prints(".macro m() { .print x }\nm()\n.var x = 1", &["Null"]);
+    fails(".macro m() { .print x }\nm()\n.const x = 1", "Symbol is not yet initialized");
+}
+
+#[test]
+fn definitions_in_the_wrong_place() {
+    fails("{ .macro m() { } }", "Can't define a macro here.");
+    fails(".if (true) { .function f() { } }", "Can't define a function here.");
+    fails("{ .pseudocommand p { } }", "Can't define a pseudo command here.");
+}
+
+#[test]
+fn parsing_goes_on_after_an_error() {
+    fails(".byte +\nlda foo", "Got 2 errors and 0 warnings while executing:");
+    fails(".if (+) {\nlda foo\n}", "Unknown symbol 'foo'");
+    fails(".if (true) .byte +", "If without body");
+    fails(".for (var i=0;i<1;i++) .byte +", "Directive missing body");
+    fails(".byte )", "Missing start token");
+    fails("{\nnop", "Missing end token");
+}
+
+#[test]
+fn syntax_that_the_original_rejects() {
+    fails(".byte +1", "Syntax error");
+    fails(".print", "Syntax error");
+    fails(".for (;;) nop", "Syntax error");
+    fails(".foo 1", "Invalid directive");
+    fails(".return 1", "Invalid directive");
+    fails(".var\nnop", "Unexpected end of line");
+    fails(".byte $", "Syntax error");
+    fails(".cpu foo", "Invalid cpu name.");
+    fails("nop.q", "Unknown extension: q");
+    assert_eq!(bytes(".var s = \"abc\" .size()\n.byte s"), [3]);
+}
+
+#[test]
+fn run_time_errors_of_segments_and_labels() {
+    fails(".segment A\nnop", "Undefined segment 'A'");
+    fails(".segment A [modify=\"foo\"]\nnop", "Unknown modifier 'foo'");
+    fails(".segmentdef B [segments=\"A\"]", "Subsegment 'A' not defined.");
+    fails(".label l = l", "Value can't be resolved");
+}
+
+#[test]
+fn a_namespace_can_be_used_before_it_comes() {
+    assert_eq!(bytes("*=$1000\njsr s.t.a\n.namespace s {\n.namespace t {\na: nop\n}\n}"), [0x20, 3, 0x10, 0xea]);
+}
+
+#[test]
+fn a_branch_only_counts_with_final_values() {
+    fails("bne x\n.fill 300,0\nx: nop", "jump distance is too far: 300");
+}

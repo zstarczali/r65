@@ -431,6 +431,13 @@
       "value": 10000,
       "unit": "count",
       "source": "estimated, R65 only: the original has no limit and runs out of Java stack"
+    },
+    {
+      "name": "error_list_lines",
+      "group": "errors",
+      "value": 5,
+      "unit": "count",
+      "source": "observed by running KickAss.jar 5.25: more errors end with a line of three dots"
     }
   ]
 }

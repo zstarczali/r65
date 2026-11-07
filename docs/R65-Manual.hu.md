@@ -507,9 +507,10 @@ sort. Minden menetben a definíciója előtt használt címke az előző menetb�
 amikor minden érték ismert és stabil.
 
 - **A címkék a hatókörükön belül bárhol használhatók**, a definíciójuk előtt is. **A `.var` és `.const` csak a deklaráció után
-  használható**; előtte `Unknown symbol` hibát ad.
-- A címek függhetnek később definiált értékektől: a `.fill later, 0` működik, ha a `later` lejjebb van definiálva.
-- A sehol sem deklarált nevet az első menet után jelzi: `Unknown symbol 'név'`.
+  használható**, előtte ezt jelzi: `Reference to not yet defined symbol 'x'`. A deklaráció előtt lefutó makró- vagy függvénytörzs
+  eléri a nevet: ott a `.var` értéke `null`, a `.const` pedig ezt jelzi: `Symbol is not yet initialized`.
+- **Az első menet előtt minden nevet ellenőriz**, a soha nem hívott makrókban és a hamis `.if` ágakban is: `Unknown symbol 'név'`,
+  `Unknown function 'név'`, `Macro command 'név' not defined`. Kivétel az `.asserterror`, mert ennek a neveit csak futáskor ellenőrzi.
 - **A `.print` egyszer fut**, a kimeneti menetben. **A `.printnow` minden menetben ír**, ami a menetek hibakeresésénél
   segít.
 - A soha be nem álló program ezzel a hibával áll le: `Made no progress and can't solve the program`.
@@ -1576,7 +1577,13 @@ at line 2, column 5 in game.asm
 
 | Üzenet | Szokásos ok |
 |---|---|
-| `Unknown symbol 'x'` | Elírt név, vagy belső hatókörben definiált név, vagy a deklaráció előtt használt `.var` |
+| `Unknown symbol 'x'` | Elírt név, vagy belső hatókörben definiált név |
+| `Reference to not yet defined symbol 'x'` | A deklaráció előtt használt `.var`, `.const` vagy `.enum` érték |
+| `Syntax error` | A szöveg nem olvasható kódként. Egyoperandusú plusz nincs, így a `.byte +1` is ilyen |
+| `Invalid token`, `Invalid directive` | Így nem kezdődhet sor, ismeretlen direktíva, vagy kód függvényben, illetve `.define`-ban |
+| `If without body`, `Else without body`, `Directive missing body` | Az `.if`, az `else` vagy a `.for` utáni egyetlen utasítás hibás |
+| `Can't define a macro here. ...` | Makró, függvény vagy pszeudoparancs `{ }`, `.if`, `.for` és hasonlók belsejében |
+| `Undefined segment 'x'` | Paraméter és korábbi definíció nélküli `.segment x` |
 | `The symbol 'x' is already defined` | Ugyanaz a név kétszer egy hatókörben |
 | `Can't assign to 'x' since it isn't a variable` | Értékadás címkének vagy `.const`-nak |
 | `Pseudo command 'x' not defined` | Nagybetűs utasításnév vagy hiányzó definíció |
@@ -1592,10 +1599,20 @@ at line 2, column 5 in game.asm
 | `relative address is illegal (jump distance is too far: n).` | Használj `jmp`-t, vagy fordítsd meg az elágazást |
 | `Can't get a double representation from a value of type String` | Szám áll a `+` bal oldalán és szöveg a jobb oldalán, vagy szöveg van `.byte`-ban |
 | `Can't get a boolean representation from a value of type Number` | `.if (1)`; írj összehasonlítást |
-| `Can't output bytes inside a function or a .define block` | Használj makrót |
 | `In segment 'X' the memoryblock 'A' (...) overlaps 'B' (...)` | Két blokk ugyanazon a címen |
 | `Can't open file: x`, `Can't open file 'x'` | Ellenőrizd az útvonalat és a `-libdir` kapcsolót |
 | `Too deep recursion` | Önmagát a végtelenségig hívó makró vagy függvény. Az R65 saját szövege: az eredeti Java `StackOverflowError` hibával áll le |
+
+Több hibánál az R65 először felsorolja őket, legfeljebb 5-öt, utána `  ...` áll, és az elsőt írja le részletesen:
+
+```text
+Got 2 errors and 0 warnings while executing:
+  (C:\work\main.asm 1:5) Error: Unknown symbol 'foo'
+  (C:\work\main.asm 2:5) Error: Unknown symbol 'bar'
+```
+
+Elöl a forrás olvasásának hibái állnak a forrás sorrendjében, utánuk a kétszer vagy rossz helyen definiált nevek, végül az ismeretlen nevek.
+Az `-asminfo errors` mindet tartalmazza.
 
 ## 22. Korlátok
 
@@ -1620,13 +1637,12 @@ mást mond, ott az R65 azt csinálja, amit a program:
 
 ### Eltérések az eredeti programtól
 
-- Több hibánál az eredeti először mindet felsorolja (`Got 2 errors and 0 warnings while executing:`). Az R65 az elsőnél megáll, és
-  az eredeti is ezt írja le részletesen.
-- Az eredeti az első menet előtt ellenőrzi a neveket, ezért a soha nem hívott makróban álló `lda nosuch` ott hiba. Az R65 csak a
-  lefutó kódot ellenőrzi, és máshol az ismeretlen függvényt vagy a rossz argumentumszámot sem találja meg.
-- A túl sok argumentummal hívott metódus az eredetiben hiba, az R65 figyelmen kívül hagyja a fölösleget.
 - A végtelen rekurzió az R65 saját hibájával áll le, a 2000 szintű rekurzió pedig működik, míg az eredetinek elfogy a verme.
-- A `flex pass` sorok száma eltérhet, ha egy szegmens egy másik után kezdődik, vagy ha olyan címke mozdul el, amelyet semmi nem használ.
+- A `flex pass` sorok száma eltérhet, ha egy szegmens egy másik után kezdődik, ha egy később definiált névtérből hiányzik a név, és
+  néhány sok makrót használó programban. Ezekben az azonos nevű címkék a `.vs` fájlban más `__n` számot is kaphatnak, és a sorok
+  sorrendje is eltérhet. A program bájtjai ugyanazok voltak.
+- Olyan szöveg hibája után, amely egyáltalán nem Kick Assembler kód, az R65 átugorja az utasítás többi részét, míg az eredeti még
+  jelezhet hibát azon a soron. Egy másik assembler forrása ezért más hibalistát kap.
 - `-asminfo`: a `[version]` az R65 verzióját adja, a direktívák szövegei az R65 sajátjai, a `syntax` bejegyzések más sorrendben
   állnak, a beépített makrókéi pedig kimaradnak. A beépített fájl neve `r65:autoinclude.asm`.
 - A `-cfgfile` fájl `//` sorát kihagyja, az eredeti figyelmeztet a szavaira.

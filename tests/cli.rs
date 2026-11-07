@@ -11,6 +11,25 @@ fn banner_names_the_program_and_version() {
 }
 
 #[test]
+fn help_starts_with_the_title_usage_and_options() {
+    let p = Project::new();
+    let r = p.run(&["--help"]);
+    let title = format!("R65 \u{2013} KickAssembler compatible compiler for C64 v{}\n(C) 2026 Zsolt Tarczali\n\nUsage:\n  r65 <file.asm> [OPTIONS]", env!("CARGO_PKG_VERSION"));
+    assert!(r.out.replace("\r\n", "\n").starts_with(&title), "{}", r.out);
+    for part in ["Options:\n  -o <file>", "Examples:\n  r65 game.asm", "Help topics"] {
+        assert!(r.out.replace("\r\n", "\n").contains(part), "{} isn't in:\n{}", part, r.out);
+    }
+}
+
+#[test]
+fn no_arguments_show_the_help_and_fail() {
+    let r = Project::new().run(&[]);
+    assert_eq!(r.code, 1);
+    assert!(r.out.contains("Usage:\n  r65 <file.asm> [OPTIONS]") || r.out.contains("Usage:\r\n  r65 <file.asm> [OPTIONS]"), "{}", r.out);
+    assert!(!r.out.contains("No input file"), "{}", r.out);
+}
+
+#[test]
 fn help_topics() {
     let p = Project::new();
     let index = p.run(&["--help"]);

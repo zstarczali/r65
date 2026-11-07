@@ -34,7 +34,7 @@ all 8 samples assemble. Run each from its own folder, because they import
 
 ## Code map
 
-The flow is `main` → `driver::assemble` → preprocess → lex → parse → passes → output.
+The flow is `main` → `driver::assemble` → preprocess → lex → parse → name check → passes → output.
 
 | File | Job |
 |---|---|
@@ -44,6 +44,7 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → p
 | `src/asminfo.rs`, `src/asminfo_libraries.txt` | `-asminfo` sections |
 | `src/preproc.rs` | Comments, `#define`, `#if`, `#import`; also `.import source` |
 | `src/lexer.rs`, `src/parser.rs`, `src/ast.rs` | Tokens and syntax tree; `.directive` names are in `parser.rs` |
+| `src/names.rs` | The check of all names before the first pass |
 | `src/eval.rs` | `Asm` state, pass loop (`Asm::run`), scopes, labels, memory blocks |
 | `src/exec.rs` | Running statements, instructions and addressing modes, macros, segments |
 | `src/builtins.rs` | Expressions, built-in functions, methods of script values |
@@ -104,5 +105,4 @@ warnings; don't add new ones.
 - Java plugins are not supported: `.plugin` and plugin modifiers report errors.
 - The segment parameter `dest` is accepted but has no effect.
 - The rest is in section 22 of `docs/R65-Manual.md`, with tests in `tests/kickass_gaps.rs`.
-  The biggest ones: the original checks names before the first pass and lists all errors
-  (`Got N errors and 0 warnings while executing:`), while R65 stops at the first one.
+  Most of what's left is error recovery in text that isn't Kick Assembler code and the number of `flex pass` lines.

@@ -632,10 +632,8 @@ impl Asm {
         loop {
             self.pass += 1;
             self.reset_pass();
-            if self.pass > 1 {
-                if !self.range_strict {
-                    self.say(&format!("flex pass {}", self.pass));
-                }
+            if self.pass > 1 && !self.range_strict {
+                self.say(&format!("flex pass {}", self.pass));
             }
             let r = self.exec_block_here(&program).map(|_| ());
             if let Err(e) = r {

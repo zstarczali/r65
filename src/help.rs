@@ -3,19 +3,12 @@
 
 use crate::driver;
 
-const OVERVIEW: &str = "Usage:
-  r65 <file.asm> [options]     assemble a source file
-  r65 --gui [file.asm]         open the optional editor window
-  r65 --help [topic]           show this help, or one topic
+const USAGE_EXAMPLES: &str = "Examples:
+  r65 game.asm -o game.prg -showmem
+  r65 game.asm -vicesymbols -symbolfile -define DEBUG
+  r65 --help directives";
 
-Quick start:
-  r65 game.asm                 writes game.prg next to the source
-  r65 game.asm -showmem -vicesymbols -bytedump
-  r65 game.asm -o out.prg -odir build -define DEBUG
-
-Exit code: 0 on success, 1 on any error.
-
-Help topics (r65 --help <topic>):
+const TOPIC_LIST: &str = "Help topics (r65 --help <topic>):
   options       every command line option
   syntax        labels, numbers, operators, addressing modes
   directives    all .directives
@@ -415,15 +408,20 @@ const TOPICS: [(&str, &str); 13] = [
     ("limits", LIMITS),
 ];
 
+/// What `r65 --help` and `r65` without arguments print.
+pub fn overview() -> String {
+    format!("{}\n\n{}\n\n{}\n\n{}", driver::help_title(), driver::HELP, USAGE_EXAMPLES, TOPIC_LIST)
+}
+
 /// The help text of a topic (none = overview), or None for an unknown topic.
 pub fn text(topic: Option<&str>) -> Option<String> {
-    let overview = format!("{}\n\n{}", driver::banner_lines().join("\n"), OVERVIEW);
+    let overview = overview();
     let Some(topic) = topic else { return Some(overview) };
     let t = topic.to_lowercase();
     match t.as_str() {
         "options" => Some(driver::HELP.to_string()),
         "all" => {
-            let mut parts = vec![overview.as_str(), driver::HELP];
+            let mut parts = vec![overview.as_str()];
             parts.extend(TOPICS.iter().map(|(_, body)| *body));
             Some(parts.join("\n\n"))
         }

@@ -84,6 +84,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if args.is_empty() && opts.file.is_none() {
+        println!("{}", help::overview());
+        std::process::exit(1);
+    }
     let log = driver::Log::new(true);
     let out = driver::assemble(&opts, None, &log);
     if let Some(lf) = &opts.log_file {

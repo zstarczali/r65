@@ -270,3 +270,49 @@ of the manual for what is still different.
 - `-debugdump` (`<name>.dbg`): 3 space indent levels, `<Sources>`, a `<Segment>` per segment,
   entries `$1000,$1000,1,2,8,2,10` that end at the mnemonic or directive name, `<Labels>` with the
   code labels, `<Breakpoints>`, `<Watchpoints>`, blank lines between sections.
+- Error list, observed: `Got N errors and 0 warnings while executing:` after `parsing`, at most 5 lines and then `  ...`, then the
+  normal text of the first error. Lines are `  (<full path> line:col) Error: text`, or `  Error: text` without a position. One error
+  gets no list. `-asminfo errors` has all errors, and the end column of `.name` is the end of the name.
+- Order, observed: errors of reading the source (preprocessor, tokens, brackets, parser, in stream order), then names defined twice and
+  `Can't define ... here`, then references. A parse error doesn't stop the later groups. Overlaps and then limits are listed the same way.
+- Recovery, observed: after a parse error the rest of the statement goes, up to the line end, a `;` outside brackets or a `}`, with any
+  nested `{ }`. `.if (+) { }` keeps its body with a false condition. A failed single statement body adds `If without body`,
+  `Else without body` or `Directive missing body` (not for `.while`). Differs: the original can report more on a line that starts
+  with `!word`, as ACME code does; see `tests/kickass_gaps.rs`.
+- Brackets, observed: a closer without its pair gives `Missing start token` and is removed. Each opener left at the end of a file gives
+  `Missing end token`, innermost first. Line ends inside `( )` and `[ ]` don't count.
+- Syntax, observed: there's no unary `+`. A character that starts no token is `Syntax error` where a value is expected and `Invalid token`
+  at the start of a statement. A `.` after a space still means a field or method: `.var a=1 .print a` fails at the last `a`.
+  `else` needs a `}` or a line end before it, otherwise it's a name: `.if (x) nop else nop` fails. `.for` needs its condition.
+  `.print` needs an argument, and `.byte` doesn't.
+- Line end after a directive name, observed: `Unexpected end of line` for `.var .const .label .pc .import .segment .segmentdef .segmentout
+  .disk .file .modify .if .for`; `Comma seperator expected` for `.fill`; `Invalid number of arguments.` for `.lohifill .errorif`;
+  `Missing second argument` for `.assert .asserterror`; `Missing page size argument` for `.align`; `Token must be an identifer` for
+  `.cpu`; `First argument must be present.` for `.watch`. `.macro .function .pseudocommand .namespace .struct .define` read the name from
+  the next line and report `Unexpected end of source` with an `<EOF>` source line when nothing follows it. `.enum .while .zp` report
+  `Invalid token` at the next line.
+- Inside `.function` and `.define`, observed: code directives give `Invalid directive`, instructions, labels and macro calls give
+  `Invalid token`. `.return` elsewhere gives `Invalid directive`.
+- Name check before the first pass, observed; `src/names.rs`. New scopes: `{ }`, `.if` branches also without braces, `.for`, `.while`,
+  bodies, `.label x = e { }`, assert blocks, `.define`. The same scope: `.file`, `.zp`, `.pseudopc`. Each opening of a namespace shares
+  its names. `.asserterror` isn't checked, and its names report as `x -- OK. | Unknown symbol 'foo'` when it runs. For a field,
+  method or index only the head is checked. Call arguments come before the function.
+- `Reference to not yet defined symbol 'x'`, observed: a `.var`, `.const`, `.enum` value or `.define` name found in the innermost scope
+  that has it, before its declaration, also when an outer one exists. Across a macro or function body there's no such check. If the
+  body runs too early, a `.var` is `null` and the others report `Symbol is not yet initialized`.
+- Multi labels, observed: `!+` and `!-` look along the scope chain in source order, also when the label comes after a macro definition.
+- Definitions, observed: `.function`, `.macro` and `.pseudocommand` only directly in a namespace, `.file`, `.zp` or `.pseudopc`,
+  otherwise `Can't define a macro here. ...`, and such a macro isn't registered. A `.struct` is allowed anywhere and belongs to the namespace.
+- Calls, observed: `Unknown function 'f'`, `Invalid number of arguments for function 'f'`, `Macro command 'm' not defined`,
+  `Invalid number of arguments for macro`, `Pseudo command 'p' not defined`, `Too many arguments for pseudo command`. `m` doesn't
+  call a macro, and `p()` doesn't call a pseudocommand. There's no `IdentityMatrix`, whatever the manual says.
+- Static errors, observed: `Invalid cpu name.` at the name, `Unknown extension: q` at the mnemonic.
+- At run time, observed: `Unknown modifier 'foo'` in `.segment` and `.segmentdef`, `Unknown modifyer: foo` in `.modify`,
+  `Undefined segment 'A'` for `.segment A` without parameters and earlier definition, `Subsegment 'A' not defined.` after `Output pass`,
+  `Value can't be resolved` at the first use of a `.label` that only depends on itself, after `flex pass 2`.
+- Method arguments, observed: size, toLowerCase, toUpperCase, asBoolean, number, string, shuffle, reverse, sort, lock, keys, getX, getY, getZ
+  take 0; charAt, get, addAll, remove, containsKey, X take 1; substring and list set take 2; asNumber 0 or 1; matrix get 2, set 3.
+  Otherwise `Invalid number of arguments : name`. `add` and `put` take any number.
+- Overlap text, observed: the block with the lower start comes first. With the same start, the later one comes first.
+- A branch that is too far, estimated from the results: it's only an error with final values. R65 runs one quiet extra pass to report it.
+- File names, observed: the list shows the full path, the text under it the path relative to the source's folder, with `\` on Windows.
