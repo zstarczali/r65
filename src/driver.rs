@@ -112,7 +112,7 @@ impl Default for Options {
     }
 }
 
-pub const HELP: &str = "Usage: rust65 <file.asm> [options]
+pub const HELP: &str = "Usage: r65 <file.asm> [options]
   (a command line tool; --gui [file] opens an optional editor window)
 
   -o <file>            name of the output file
@@ -145,7 +145,7 @@ pub const HELP: &str = "Usage: rust65 <file.asm> [options]
   :name=value          a value for the script hashtable cmdLineVars
   --gui [file]         open the editor window
   --screenshot <png>   open the window, save a picture of it and quit
-  -h, --help [topic]   this help; rust65 --help lists all topics";
+  -h, --help [topic]   this help; r65 --help lists all topics";
 
 /// Parses command line options. Returns the options or an error text.
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -402,7 +402,7 @@ pub fn assemble(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
     let pre_res = {
         let mut pre = Pre::new(&mut asm.src, o.defines.iter().cloned().collect::<HashSet<_>>(), cfg.libdirs.clone());
         pre.replace = o.replace.clone();
-        let r = pre.run_text(PathBuf::from("rust65:autoinclude.asm"), &auto_include(), 0).and_then(|_| pre.run_text(abs.clone(), &source, 0));
+        let r = pre.run_text(PathBuf::from("r65:autoinclude.asm"), &auto_include(), 0).and_then(|_| pre.run_text(abs.clone(), &source, 0));
         r.map(|_| std::mem::take(&mut pre.out))
     };
     let lines = match pre_res {

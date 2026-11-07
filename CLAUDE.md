@@ -2,7 +2,7 @@
 
 KickAssembler compatible 6502/C64 cross assembler in Rust. The goal is to match
 KickAss 5.25 on the same sources: the output bytes, the log text and the file
-formats. The Cargo package and the program are named `rust65`.
+formats. The Cargo package and the program are named `r65`.
 
 ## Commands
 
@@ -10,9 +10,9 @@ formats. The Cargo package and the program are named `rust65`.
 cargo build
 cargo build --release
 cargo clippy
-target/debug/rust65 file.asm -showmem -vicesymbols
-target/debug/rust65 --help
-target/debug/rust65 --gui file.asm
+target/debug/r65 file.asm -showmem -vicesymbols
+target/debug/r65 --help
+target/debug/r65 --gui file.asm
 ```
 
 `cargo test` runs but the project has no tests. To check a change, assemble a
@@ -30,7 +30,7 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → p
 
 | File | Job |
 |---|---|
-| `src/main.rs` | Arguments, window or command line mode, `rust65.cfg` |
+| `src/main.rs` | Arguments, window or command line mode, `r65.cfg` |
 | `src/driver.rs` | Options, `HELP` option list, start-up banner, one whole assembly, error text |
 | `src/help.rs` | `--help [topic]` texts |
 | `src/preproc.rs` | Comments, `#define`, `#if`, `#import`; also `.import source` |
