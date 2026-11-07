@@ -35,9 +35,15 @@ sudo apt-get install libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 ## Automated builds
 
 GitHub Actions builds `.zip` packages for Windows and `.tar.gz` packages for macOS
-and Linux, each for x64 and arm64. Every push to `main` or `development` keeps
-them as workflow artifacts. Pushing a `v*` tag also publishes them as a GitHub
-release:
+and Linux, each for x64 and arm64. The workflow only runs when started by hand,
+from the Actions page or with the command below, and keeps the packages as workflow
+artifacts:
+
+```bash
+gh workflow run build.yml --ref development
+```
+
+A run started on a `v*` tag also publishes them as a GitHub release:
 
 ```bash
 git tag v1.0.0
@@ -45,6 +51,10 @@ git tag v1.0.0
 
 ```bash
 git push origin v1.0.0
+```
+
+```bash
+gh workflow run build.yml --ref v1.0.0
 ```
 
 ## Usage
