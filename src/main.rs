@@ -4,6 +4,8 @@
 //! Without a source file it says so and exits with code 1, like the original.
 //! `--gui [file]` opens the optional editor window, `--screenshot <png>` grabs it.
 
+mod asminfo;
+mod names;
 mod ast;
 mod builtins;
 mod driver;
@@ -27,11 +29,7 @@ fn cfg_args() -> Vec<String> {
     let Ok(exe) = std::env::current_exe() else { return vec![] };
     let Some(dir) = exe.parent() else { return vec![] };
     let Ok(text) = std::fs::read_to_string(dir.join("r65.cfg")) else { return vec![] };
-    text.lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"))
-        .flat_map(|l| l.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>())
-        .collect()
+    driver::cfg_text_args(&text)
 }
 
 fn main() {
@@ -86,10 +84,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if args.is_empty() && opts.file.is_none() {
+        println!("{}", help::overview());
+        std::process::exit(1);
+    }
     let log = driver::Log::new(true);
     let out = driver::assemble(&opts, None, &log);
     if let Some(lf) = &opts.log_file {
-        let _ = std::fs::write(lf, log.lines.borrow().join("\n") + "\n");
+        let _ = std::fs::write(lf, log.lines.lock().unwrap().join("\n") + "\n");
     }
     std::process::exit(if out.ok { 0 } else { 1 });
 }

@@ -6,6 +6,22 @@ use crate::eval::*;
 use crate::value::*;
 use std::rc::Rc;
 
+/// the `min` and `max` parameters of a segment; virtual blocks count too
+pub fn check_limits(blocks: &[Blk], p: &SegParams, name: &str) -> R<()> {
+    for b in blocks {
+        if b.bytes.is_empty() {
+            continue;
+        }
+        let end = b.start + b.bytes.len() as i64 - 1;
+        if p.min.is_some_and(|mn| b.start < mn) || p.max.is_some_and(|mx| end > mx) {
+            let upper = p.max.map(|mx| format!("${:04x}", mx)).unwrap_or_else(|| " ".into());
+            let msg = format!("In segment '{}' the memoryblock {} is out of segment bounds (${:04x}-{}).", name, blk_desc(b), p.min.unwrap_or(0), upper);
+            return Err(AsmError { pos: None, msg, called: vec![] });
+        }
+    }
+    Ok(())
+}
+
 impl Asm {
     pub fn exec_block_here(&mut self, b: &Block) -> R<Flow> {
         for st in &b.stmts {
@@ -86,6 +102,8 @@ impl Asm {
                     self.define(sc, name, Val::Num(pc as f64, fl, 0), SymKind::Label, pos)?;
                     self.pending_label = Some((sc, name.clone()));
                     self.dump_labels.push((name.clone(), None));
+                    let seg = self.segs[self.cur_seg].name.clone();
+                    self.placed_labels.push((seg, pc, name.clone(), pos));
                 }
             }
             SK::Instr { mn, suffix, arg } => {
@@ -124,7 +142,7 @@ impl Asm {
                 let mut out = vec![];
                 for it in items {
                     let v = self.eval(it)?;
-                    self.push_data(&v, *size, &mut out, it.pos)?;
+                    self.push_data(&v, *size, &mut out, pos)?;
                 }
                 self.emit(&out, pos)?;
             }
@@ -261,7 +279,7 @@ impl Asm {
                     return Ok(Flow::Return(v));
                 }
             }
-            SK::Var { name, root, init } => {
+            SK::Var { name, root, init, .. } => {
                 let v = match init {
                     Some(e) => self.eval(e)?,
                     None => Val::Null,
@@ -269,12 +287,12 @@ impl Asm {
                 let sc = if *root { 0 } else { self.cur_scope };
                 self.define(sc, name, v, SymKind::Var, pos)?;
             }
-            SK::Const { name, root, e } => {
-                let v = lock(self.eval(e)?);
+            SK::Const { name, root, e, .. } => {
+                let v = self.eval(e)?;
                 let sc = if *root { 0 } else { self.cur_scope };
                 self.define(sc, name, v, SymKind::Const, pos)?;
             }
-            SK::LabelDef { name, root, e, body } => {
+            SK::LabelDef { name, root, e, body, .. } => {
                 let v = match self.eval(e)? {
                     Val::Num(x, f, _) => Val::Num(x, f & !F_FWD, 0),
                     Val::Char(_, x) => num(x),
@@ -299,7 +317,7 @@ impl Asm {
             SK::Enum(items) => {
                 // entries without a value count 0, 1, 2...; given values don't move the counter
                 let mut next = 0.0;
-                for (n, e) in items {
+                for (n, e, _) in items {
                     let v = match e {
                         Some(e) => self.eval(e)?,
                         None => {
@@ -347,7 +365,9 @@ impl Asm {
             SK::AssertErr(d, e) => {
                 let desc = self.eval_str(d)?;
                 let saved = (self.cur_scope, self.cur_ns, self.fn_depth, self.call_depth);
+                self.expect_error += 1;
                 let r = self.eval(e);
+                self.expect_error -= 1;
                 self.cur_scope = saved.0;
                 self.cur_ns = saved.1;
                 self.fn_depth = saved.2;
@@ -357,7 +377,33 @@ impl Asm {
                     Err(er) => self.prints.push(format!("{} -- OK. | {}", desc, er.msg)),
                     Ok(_) => {
                         self.asserts.1 += 1;
-                        self.prints.push(format!("{} -- ERROR IN ASSERTION!!! (no error was raised)", desc));
+                        self.prints.push(format!("{} -- ERROR IN ASSERTION!", desc));
+                    }
+                }
+            }
+            SK::AssertCode(d, a, b) => {
+                let desc = self.eval_str(d)?;
+                let got = self.assert_code(a)?;
+                let want = self.assert_code(b)?;
+                self.asserts.0 += 1;
+                if got == want {
+                    self.prints.push(format!("{} -- OK. | {}", desc, got));
+                } else {
+                    self.asserts.1 += 1;
+                    self.prints.push(format!("{} -- FAILED! | {}  -- {}", desc, got, want));
+                }
+            }
+            SK::AssertErrCode(d, b) => {
+                let desc = self.eval_str(d)?;
+                self.expect_error += 1;
+                let r = self.assert_code(b);
+                self.expect_error -= 1;
+                self.asserts.0 += 1;
+                match r {
+                    Err(er) => self.prints.push(format!("{} -- OK. | {}", desc, er.msg)),
+                    Ok(_) => {
+                        self.asserts.1 += 1;
+                        self.prints.push(format!("{} -- FAILED!", desc));
                     }
                 }
             }
@@ -526,7 +572,7 @@ impl Asm {
             SK::Watch(v) => {
                 let a1 = match v.first().and_then(|x| x.as_ref()) {
                     Some(e) => self.eval_int(e)?.0,
-                    None => return err(pos, "Missing watch address"),
+                    None => return err(pos, "First argument must be present."),
                 };
                 let a2 = match v.get(1).and_then(|x| x.as_ref()) {
                     Some(e) => Some(self.eval_int(e)?.0),
@@ -554,10 +600,10 @@ impl Asm {
                         i
                     }
                     None => {
-                        let p = match params {
-                            Some(p) => self.seg_params(p, pos)?,
-                            None => SegParams::default(),
+                        let Some(p) = params else {
+                            return err(pos, format!("Undefined segment '{}'", name));
                         };
+                        let p = self.seg_params(p, pos)?;
                         self.segs.push(Seg { name: name.clone(), p, blocks: vec![], cur: None });
                         self.segs.len() - 1
                     }
@@ -573,7 +619,12 @@ impl Asm {
             SK::SegmentOut(params) => {
                 self.no_fn_mode(pos)?;
                 let p = self.seg_params(params, pos)?;
-                let blocks = self.intermediate_blocks(&p, pos, true)?;
+                let name = format!("<<.segmentout:{}>>", self.segouts);
+                self.segouts += 1;
+                // its bytes count as known one pass later (observed)
+                self.used_fwd |= self.pass == 1;
+                self.fwd_other |= self.pass == 1;
+                let blocks = self.intermediate_blocks(&p, &name, pos, true)?;
                 let bytes = crate::output::flatten(&blocks, p.fill_byte).1;
                 self.emit(&bytes, pos)?;
             }
@@ -593,11 +644,37 @@ impl Asm {
                 self.disk_reqs.push(DiskReq { p, files: fs });
             }
             SK::Modify { name, .. } | SK::FileModify { name, .. } => {
-                return err(pos, format!("Unknown modifier '{}' (plugins are not supported)", name));
+                return err(pos, format!("Unknown modifyer: {}", name));
             }
             SK::Plugin(_) => return err(pos, "Java plugins are not supported by this assembler"),
         }
         Ok(Flow::Normal)
+    }
+
+    /// Assembles the code block of an assert on the side, so it adds nothing to the program.
+    /// Returns the bytes as text: `2000:ad,00,10`, with `; ` between memory blocks.
+    fn assert_code(&mut self, b: &Block) -> R<String> {
+        let saved = (self.cur_seg, self.pc_delta, self.pc_flags, self.cur_scope, self.cur_ns, self.fn_depth, self.call_depth, self.zp_mode, self.encoding, self.cpu.clone());
+        let dump_labels = std::mem::take(&mut self.dump_labels);
+        self.pending_label = None;
+        let seg = self.segs.len();
+        self.segs.push(Seg { name: "Assert".into(), p: SegParams::default(), blocks: vec![], cur: None });
+        self.cur_seg = seg;
+        self.pc_delta = 0;
+        self.pc_flags = 0;
+        let r = self.exec_scoped(b);
+        let blocks = std::mem::take(&mut self.segs[seg].blocks);
+        self.segs.truncate(seg);
+        (self.cur_seg, self.pc_delta, self.pc_flags, self.cur_scope, self.cur_ns, self.fn_depth, self.call_depth, self.zp_mode, self.encoding, self.cpu) = saved;
+        self.dump_labels = dump_labels;
+        self.pending_label = None;
+        r?;
+        let text: Vec<String> = blocks
+            .iter()
+            .filter(|bl| !bl.virt && !bl.bytes.is_empty())
+            .map(|bl| format!("{:04x}:{}", bl.start, bl.bytes.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join(",")))
+            .collect();
+        Ok(text.join("; "))
     }
 
     fn loop_stmt(&mut self, init: &[E], cond: Option<&E>, step: &[E], body: &Block) -> R<Flow> {
@@ -678,7 +755,7 @@ impl Asm {
     // ------------------------------------------------------------ segments
     pub fn seg_params(&mut self, params: &Params, pos: Pos) -> R<SegParams> {
         let mut p = SegParams { pos, ..Default::default() };
-        for (name, e, _) in params {
+        for (name, e, _npos) in params {
             let v = match e {
                 Some(e) => self.eval(e)?,
                 None => Val::Bool(true, 0),
@@ -700,11 +777,35 @@ impl Asm {
                 "outPrg" => p.out_prg = Some(v.to_str()),
                 "outBin" => p.out_bin = Some(v.to_str()),
                 "segments" => p.segments = list(&v),
-                "prgFiles" => p.prg_files = list(&v),
-                "sidFiles" => p.sid_files = list(&v),
-                "modify" => p.modify = Some(v.to_str()),
+                "prgFiles" | "sidFiles" => {
+                    let files = list(&v);
+                    if self.pass == 1 {
+                        for f in &files {
+                            if self.read_file(f, pos).is_err() {
+                                self.missing_files.push((*_npos, f.clone()));
+                            }
+                        }
+                    }
+                    if name == "prgFiles" {
+                        p.prg_files = files;
+                    } else {
+                        p.sid_files = files;
+                    }
+                }
+                "modify" => {
+                    let m = v.to_str();
+                    if m != "BasicUpstart" {
+                        self.early_error = true;
+                        return err(pos, format!("Unknown modifier '{}'", m));
+                    }
+                    p.modify = Some(m);
+                }
                 "dest" => p.dest = Some(v.to_str()),
                 "name" => p.name = Some(v.to_str()),
+                "format" => {
+                    p.format_pos = *_npos;
+                    p.other.insert(name.clone(), v);
+                }
                 "type" => p.ftype = Some(v.to_str()),
                 "mbfiles" => p.mbfiles = as_b(&v),
                 n if n.starts_with('_') || n.starts_with("marg") => {
@@ -726,6 +827,7 @@ impl Asm {
         let sg = if during_pass && self.prev_segs.contains_key(name) {
             // during a pass a segment may not be complete yet: the previous pass knows all of it
             self.used_fwd = true;
+            self.fwd_other = true;
             self.prev_segs.get(name).cloned()
         } else {
             self.segs.iter().find(|s| s.name == name).cloned()
@@ -752,6 +854,37 @@ impl Asm {
             let mut b = self.segment_blocks(s, pos, during_pass, depth + 1)?;
             out.append(&mut b);
         }
+        out.append(&mut self.file_blocks(p, pos)?);
+        Ok(out)
+    }
+
+    /// checks the `min` and `max` of every segment, also those that aren't written anywhere
+    pub fn check_all_limits(&mut self) -> Vec<AsmError> {
+        let mut errors = vec![];
+        for i in 0..self.segs.len() {
+            let p = self.segs[i].p.clone();
+            if let Some(s) = p.segments.iter().find(|s| !self.segs.iter().any(|x| x.name == **s)) {
+                errors.push(AsmError { pos: Some(p.pos), msg: format!("Subsegment '{}' not defined.", s), called: vec![] });
+                continue;
+            }
+            if p.min.is_none() && p.max.is_none() {
+                continue;
+            }
+            let mut blocks = self.segs[i].blocks.clone();
+            match self.included_blocks(&p, p.pos, false, 0) {
+                Ok(mut more) => blocks.append(&mut more),
+                Err(e) => errors.push(e),
+            }
+            if let Err(e) = check_limits(&blocks, &p, &self.segs[i].name) {
+                errors.push(e);
+            }
+        }
+        errors
+    }
+
+    /// the blocks a segment gets from its prgFiles and sidFiles
+    pub fn file_blocks(&mut self, p: &SegParams, pos: Pos) -> R<Vec<Blk>> {
+        let mut out = vec![];
         for f in &p.prg_files {
             let d = self.read_file(f, pos)?;
             if d.len() < 2 {
@@ -780,7 +913,7 @@ impl Asm {
     fn apply_params(&mut self, mut blocks: Vec<Blk>, p: &SegParams, name: &str, pos: Pos) -> R<Vec<Blk>> {
         if let Some(m) = &p.modify {
             if m != "BasicUpstart" {
-                return err(pos, format!("Unknown segment modifier '{}'", m));
+                return err(pos, format!("Unknown modifier '{}'", m));
             }
             let st = p.margs.get("_start").or_else(|| p.margs.get("marg1")).and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
             let digits = st.to_string();
@@ -792,22 +925,7 @@ impl Asm {
             b.extend_from_slice(&[0, 0, 0]);
             blocks.push(Blk { start: BASIC_START, name: "BasicUpstart".into(), virt: false, named: true, bytes: b, dump: vec![] });
         }
-        for b in &blocks {
-            if b.virt || b.bytes.is_empty() {
-                continue;
-            }
-            let end = b.start + b.bytes.len() as i64 - 1;
-            if let Some(mn) = p.min {
-                if b.start < mn {
-                    return err(pos, format!("In segment '{}' the memoryblock {} is below the minimum address ${:04x}", name, blk_desc(b), mn));
-                }
-            }
-            if let Some(mx) = p.max {
-                if end > mx {
-                    return err(pos, format!("In segment '{}' the memoryblock {} is above the maximum address ${:04x}", name, blk_desc(b), mx));
-                }
-            }
-        }
+        check_limits(&blocks, p, name)?;
         if p.fill {
             if let (Some(mn), Some(mx)) = (p.min, p.max) {
                 let mut data = vec![p.fill_byte; (mx - mn + 1).max(0) as usize];
@@ -867,9 +985,9 @@ impl Asm {
     }
 
     /// blocks of an intermediate segment given by parameters (.file, .segmentout, disk files)
-    pub fn intermediate_blocks(&mut self, p: &SegParams, pos: Pos, during_pass: bool) -> R<Vec<Blk>> {
+    pub fn intermediate_blocks(&mut self, p: &SegParams, name: &str, pos: Pos, during_pass: bool) -> R<Vec<Blk>> {
         let blocks: Vec<Blk> = self.included_blocks(p, pos, during_pass, 0)?.into_iter().filter(|b| !b.virt).collect();
-        self.apply_params(blocks, p, "Intermediate", pos)
+        self.apply_params(blocks, p, name, pos)
     }
 
     // ------------------------------------------------------------ instructions
@@ -937,7 +1055,7 @@ impl Asm {
                 "ay" | "absy" => ty = 9,
                 "i" | "ind" => ty = 10,
                 "r" | "rel" => ty = 11,
-                other => return err(pos, format!("Unknown mnemonic extension '.{}'", other)),
+                other => return err(pos, format!("Unknown extension: {}", other)),
             }
         }
         let value = v.as_f64();
@@ -962,7 +1080,14 @@ impl Asm {
                 _ => (5, 14),
             };
             if force_zp && get(zpf) < 0 {
-                return err(pos, format!("'{}' does not support mode '{}'", mn, arg_type_name(zpf)));
+                let mode = match zpf {
+                    3 => "zeropageX",
+                    4 => "zeropageY",
+                    5 => "indirectZeropageX",
+                    12 => "indirectZeropage",
+                    _ => "zeropage",
+                };
+                return err(pos, format!("'{}' does not support mode '{}'", mn, mode));
             }
             let zp_ok = get(zpf) >= 0;
             let known = !(unk || fwd);
@@ -994,7 +1119,12 @@ impl Asm {
         }
         let mut val = iv;
         if ty == 11 {
-            let d = iv - (pc + size as i64);
+            let mut d = iv - (pc + size as i64);
+            if !(-128..=127).contains(&d) && fwd && !self.range_strict {
+                // a value from the previous pass can still change
+                self.range_deferred = true;
+                d = 0;
+            }
             if !(-128..=127).contains(&d) {
                 return err(epos, format!("relative address is illegal (jump distance is too far: {}).", d));
             }
@@ -1002,7 +1132,11 @@ impl Asm {
         }
         if ty == 13 {
             let t = v2.as_ref().and_then(|x| x.as_f64()).unwrap_or(0.0) as i64;
-            let d = t - (pc + size as i64);
+            let mut d = t - (pc + size as i64);
+            if !(-128..=127).contains(&d) && v2.as_ref().is_some_and(|x| x.flags() & F_FWD != 0) && !self.range_strict {
+                self.range_deferred = true;
+                d = 0;
+            }
             if !(-128..=127).contains(&d) {
                 return err(pos, "relative address is illegal (jump distance is too far).");
             }
@@ -1073,8 +1207,8 @@ impl Asm {
     }
 
     fn call_body(&mut self, f: &Rc<FuncDef>, def_ns: usize, args: Vec<Val>, pos: Pos) -> R<Flow> {
-        if self.call_depth > 200 {
-            return err(pos, "Too deep recursion (does a macro call itself without stopping?)");
+        if self.call_depth > MAX_CALL_DEPTH {
+            return err(pos, "Too deep recursion (does a macro or function call itself without stopping?)");
         }
         let def_ns = self.fn_home.get(&(Rc::as_ptr(f) as usize)).copied().unwrap_or(def_ns);
         let parent = self.ns_scope.get(&def_ns).cloned().unwrap_or(0);
@@ -1084,6 +1218,7 @@ impl Asm {
         if let Some((sc, name)) = attach {
             self.attach_scope(sc, &name, id);
         }
+        self.scopes[id as usize].call_scope = true;
         for (p, v) in f.params.iter().zip(args) {
             self.scopes[id as usize].order.push(p.clone());
             self.scopes[id as usize].syms.insert(p.clone(), Sym { val: v, kind: SymKind::Var });
@@ -1097,7 +1232,9 @@ impl Asm {
         self.cur_scope = saved.0;
         self.cur_ns = saved.1;
         r.map_err(|mut e| {
-            e.called.push(pos);
+            if !e.msg.starts_with("Too deep recursion") {
+                e.called.push(pos);
+            }
             e
         })
     }
@@ -1106,10 +1243,10 @@ impl Asm {
         let (f, ns) = match self.find_macro(name, root, args.len()) {
             Some(x) => x,
             None => {
-                if self.find_pseudo(name, root).is_some() {
-                    return err(pos, format!("'{}' is a pseudocommand, call it without parenthesis", name));
+                if (0..=32).any(|n| self.find_macro(name, root, n).is_some()) {
+                    return err(pos, "Invalid number of arguments for macro");
                 }
-                return err(pos, format!("Unknown macro '{}'", name));
+                return err(pos, format!("Macro command '{}' not defined", name));
             }
         };
         let mut vals = vec![];
@@ -1125,10 +1262,7 @@ impl Asm {
         let (f, ns) = match self.find_pseudo(name, root) {
             Some(x) => x,
             None => {
-                if args.is_empty() && self.find_macro(name, root, 0).is_some() {
-                    return self.call_macro(name, root, &[], pos);
-                }
-                return err(pos, format!("Unknown pseudocommand '{}'", name));
+                return err(pos, format!("Pseudo command '{}' not defined", name));
             }
         };
         let mut vals = vec![];
@@ -1141,7 +1275,7 @@ impl Asm {
             vals.push(Val::Arg(t, Box::new(v)));
         }
         if vals.len() > f.params.len() {
-            return err(pos, format!("The pseudocommand '{}' takes {} arguments", name, f.params.len()));
+            return err(pos, "Too many arguments for pseudo command");
         }
         while vals.len() < f.params.len() {
             vals.push(Val::Arg(AT_NONE, Box::new(num(0.0))));
@@ -1176,6 +1310,7 @@ impl Asm {
             let idx = cur_len + d as usize - 1;
             if let Some(v) = self.prev_multi.get(name).and_then(|l| l.get(idx)) {
                 self.used_fwd = true;
+                self.fwd_other = true;
                 return Ok(Val::Num(*v, F_FWD, 0));
             }
         }

@@ -4,6 +4,8 @@ use crate::preproc::PLine;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
+    /// a character that starts no token: a syntax error wherever it comes
+    Bad,
     Ident(String),
     Num(f64),
     Str(String),
@@ -61,9 +63,73 @@ fn is_id(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-pub fn lex(lines: &[PLine]) -> Result<Vec<Token>, LexError> {
+/// A problem found before parsing. `key` is the place in the token list, for the order of the errors.
+pub struct Diag {
+    pub key: usize,
+    pub err: LexError,
+}
+
+fn is_group(t: &Token) -> bool {
+    matches!(t.tok, Tok::Op("(") | Tok::Op("["))
+}
+
+/// Pairs the brackets of each source file. A closing bracket without its pair is reported and
+/// removed, and so are the line ends inside `( )` and `[ ]`, where they mean nothing.
+/// An open `(` makes the original read ahead, so what it finds there comes before later syntax errors.
+fn pair_brackets(raw: Vec<Token>, mut lex_errors: Vec<(usize, LexError)>) -> (Vec<Token>, Vec<Diag>) {
+    let mut out: Vec<Token> = Vec::with_capacity(raw.len());
+    let mut diags = vec![];
+    let mut stack: Vec<usize> = vec![];
+    let mut outer: Vec<Vec<usize>> = vec![];
+    lex_errors.reverse();
+    for (i, t) in raw.into_iter().enumerate() {
+        while lex_errors.last().is_some_and(|e| e.0 <= i) {
+            if let Some((_, err)) = lex_errors.pop() {
+                diags.push(Diag { key: out.len(), err });
+            }
+        }
+        let problem = |t: &Token, msg: &str| LexError { file: t.file, line: t.line, col: t.col, msg: msg.to_string() };
+        match t.tok {
+            Tok::FileBegin(_) => outer.push(std::mem::take(&mut stack)),
+            Tok::FileEnd | Tok::Eof => {
+                for o in stack.iter().rev() {
+                    let key = if is_group(&out[*o]) { *o } else { out.len() };
+                    diags.push(Diag { key, err: problem(&out[*o], "Missing end token") });
+                }
+                stack = outer.pop().unwrap_or_default();
+            }
+            Tok::Op("(") | Tok::Op("[") | Tok::Op("{") => stack.push(out.len()),
+            Tok::Op(c @ (")" | "]" | "}")) => {
+                let open = match c {
+                    ")" => "(",
+                    "]" => "[",
+                    _ => "{",
+                };
+                match stack.last() {
+                    Some(o) if matches!(out[*o].tok, Tok::Op(x) if x == open) => {
+                        stack.pop();
+                    }
+                    last => {
+                        let key = last.filter(|o| is_group(&out[**o])).copied().unwrap_or(out.len());
+                        diags.push(Diag { key, err: problem(&t, "Missing start token") });
+                        continue;
+                    }
+                }
+            }
+            Tok::Newline if stack.last().is_some_and(|o| is_group(&out[*o])) => continue,
+            _ => {}
+        }
+        out.push(t);
+    }
+    (out, diags)
+}
+
+pub fn lex(lines: &[PLine]) -> (Vec<Token>, Vec<Diag>) {
     let mut out = Vec::new();
+    let mut errors = vec![];
     let mut cur_file = 0usize;
+    // the end of the last line: where the file ends for an error
+    let mut end = (0u32, 0u32);
     for pl in lines {
         match pl {
             PLine::Begin(f) => {
@@ -71,18 +137,25 @@ pub fn lex(lines: &[PLine]) -> Result<Vec<Token>, LexError> {
                 cur_file = *f;
             }
             PLine::End(f, back) => {
-                out.push(Token { tok: Tok::FileEnd, file: *f, line: 0, col: 0, sp: true });
+                out.push(Token { tok: Tok::FileEnd, file: *f, line: end.0, col: end.1, sp: true });
                 cur_file = *back;
             }
+            PLine::Error { file, line, col, msg } => {
+                errors.push((out.len(), LexError { file: *file, line: *line, col: *col, msg: msg.clone() }));
+            }
             PLine::Text { file, line, text } => {
-                let _ = cur_file;
-                lex_line(*file, *line, text, &mut out)?;
-                out.push(Token { tok: Tok::Newline, file: *file, line: *line, col: text.len() as u32 + 1, sp: false });
+                let first = out.len();
+                if let Err(e) = lex_line(*file, *line, text, &mut out) {
+                    out.truncate(first);
+                    errors.push((first, e));
+                }
+                end = (*line, text.len() as u32 + 1);
+                out.push(Token { tok: Tok::Newline, file: *file, line: *line, col: end.1, sp: false });
             }
         }
     }
-    out.push(Token { tok: Tok::Eof, file: cur_file, line: 0, col: 0, sp: true });
-    Ok(out)
+    out.push(Token { tok: Tok::Eof, file: cur_file, line: end.0, col: end.1, sp: true });
+    pair_brackets(out, errors)
 }
 
 fn lex_line(file: usize, line: u32, text: &str, out: &mut Vec<Token>) -> Result<(), LexError> {
@@ -229,7 +302,8 @@ fn lex_line(file: usize, line: u32, text: &str, out: &mut Vec<Token>) -> Result<
                     push(out, Tok::Op(op_static(&one)), sp);
                     i += 1;
                 } else {
-                    return Err(err(start, &format!("Unexpected character '{}'", c)));
+                    push(out, Tok::Bad, sp);
+                    i += 1;
                 }
             }
         }

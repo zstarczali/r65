@@ -15,10 +15,18 @@ target/debug/r65 --help
 target/debug/r65 --gui file.asm
 ```
 
-`cargo test` runs but the project has no tests. To check a change, assemble a
-small `.asm` file and inspect the `.prg`, the log and the exit code. Use the
-scratchpad for these, because outputs are written next to the source. `-nooutput`
-writes nothing.
+`cargo test` runs the real program from `tests/`, each test in its own temporary
+folder. `tests/language.rs`, `output.rs` and `cli.rs` check exact bytes, text and
+exit codes. `tests/manuals.rs` assembles every ```` ```asm ```` block of both manuals
+and checks the opcode tables, so an example that stops working fails the build.
+`tests/kickass_manual.rs` holds the behaviour observed by running KickAss.jar, one topic
+at a time. `tests/kickass_gaps.rs` holds what the original does and R65 doesn't do yet.
+These tests are `#[ignore]`d and fail today: `cargo test --test kickass_gaps -- --ignored`.
+Remove the `#[ignore]` when you fix one.
+
+For a quick check, assemble a small `.asm` file and inspect the `.prg`, the log and
+the exit code. Use the scratchpad for these, because outputs are written next to the
+source. `-nooutput` writes nothing.
 
 `F:\Development\c64_samples_kick` is a useful set of real KickAss sources, and
 all 8 samples assemble. Run each from its own folder, because they import
@@ -26,15 +34,17 @@ all 8 samples assemble. Run each from its own folder, because they import
 
 ## Code map
 
-The flow is `main` → `driver::assemble` → preprocess → lex → parse → passes → output.
+The flow is `main` → `driver::assemble` → preprocess → lex → parse → name check → passes → output.
 
 | File | Job |
 |---|---|
 | `src/main.rs` | Arguments, window or command line mode, `r65.cfg` |
 | `src/driver.rs` | Options, `HELP` option list, start-up banner, one whole assembly, error text |
 | `src/help.rs` | `--help [topic]` texts |
+| `src/asminfo.rs`, `src/asminfo_libraries.txt` | `-asminfo` sections |
 | `src/preproc.rs` | Comments, `#define`, `#if`, `#import`; also `.import source` |
 | `src/lexer.rs`, `src/parser.rs`, `src/ast.rs` | Tokens and syntax tree; `.directive` names are in `parser.rs` |
+| `src/names.rs` | The check of all names before the first pass |
 | `src/eval.rs` | `Asm` state, pass loop (`Asm::run`), scopes, labels, memory blocks |
 | `src/exec.rs` | Running statements, instructions and addressing modes, macros, segments |
 | `src/builtins.rs` | Expressions, built-in functions, methods of script values |
@@ -57,15 +67,19 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → p
 - Log and error text is part of the compatibility. Keep the wording, including
   the original's oddities such as `Made N asserts , M failed`.
 - Exit code is 0 on success and 1 on any error.
-- `KickAss.jar` isn't in this repository. Only claim a match with the original if
-  it was actually compared.
+- `KickAss.jar` isn't in this repository, but on this machine it's in
+  `D:\Development\KickAss`. Run a copy from another folder, so its `KickAss.cfg` isn't read.
+  Only claim a match with the original if it was actually compared. The original beats its
+  manual: section 22 of `docs/R65-Manual.md` lists where the two disagree.
 
 ## When adding things
 
 - A new command line option: add it to `Options`, `parse_args` and the `HELP`
   list in `driver.rs`. Add it to the `help.rs` topics if it needs explaining.
 - A new directive, function or method: also update the matching topic in
-  `help.rs`.
+  `help.rs` and both manuals in `docs/` (`R65-Manual.md`, `R65-Manual.hu.md`). The
+  manuals must keep the same `asm` examples, apart from `//` comments, and describe
+  what R65 does today. Their section 22 lists the differences from Kick Assembler.
 - The version comes from `Cargo.toml`. The name and copyright are constants at the
   top of `driver.rs`.
 - The icon sources are the two SVGs in `assets/`. After changing one, run
@@ -88,7 +102,7 @@ warnings; don't add new ones.
 
 ## Known gaps
 
-- A pseudocommand call must stay on one line (`mov #1 :` followed by a line break
-  is a syntax error). Definitions may span several lines.
 - Java plugins are not supported: `.plugin` and plugin modifiers report errors.
 - The segment parameter `dest` is accepted but has no effect.
+- The rest is in section 22 of `docs/R65-Manual.md`, with tests in `tests/kickass_gaps.rs`.
+  Most of what's left is error recovery in text that isn't Kick Assembler code and the number of `flex pass` lines.

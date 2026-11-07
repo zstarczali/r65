@@ -76,7 +76,8 @@ pub enum Val {
     Hash(Rc<HashV>),
     Struct(Rc<StructDef>, Rc<RefCell<Vec<Val>>>),
     Vector([f64; 3]),
-    Matrix(Box<[[f64; 4]; 4]>),
+    /// shared like lists: `.set` changes the matrix itself
+    Matrix(Rc<RefCell<[[f64; 4]; 4]>>),
     /// a command argument (addressing mode id, value)
     Arg(i32, Box<Val>),
     /// a scope (namespace, or a scope without a label value)
@@ -151,7 +152,7 @@ impl Val {
         match self {
             Val::Num(..) => "Number",
             Val::Char(..) => "Char",
-            Val::Bool(..) => "Boolean",
+            Val::Bool(..) => "boolean",
             Val::Str(_) => "String",
             Val::Null => "Null",
             Val::List(_) => "List",
@@ -214,6 +215,7 @@ impl Val {
             Val::Vector(v) => format!("({},{},{})", java_double(v[0]), java_double(v[1]), java_double(v[2])),
             Val::Matrix(m) => {
                 let rows: Vec<String> = m
+                    .borrow()
                     .iter()
                     .map(|r| format!("[{}]", r.iter().map(|x| java_double(*x)).collect::<Vec<_>>().join(",")))
                     .collect();

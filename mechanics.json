@@ -396,6 +396,48 @@
       "group": "log",
       "value": 1,
       "source": "KickAssembler.execute @00cc iconst_1 (error flag, or-ed with printAsmInfo @00e5)"
+    },
+    {
+      "name": "disk_bam_tracks36_speeddos",
+      "group": "disk",
+      "value": 176,
+      "unit": "offset",
+      "source": "observed by running KickAss.jar 5.25: sector 18/0, format=speeddos"
+    },
+    {
+      "name": "disk_bam_tracks36_dolphindos",
+      "group": "disk",
+      "value": 196,
+      "unit": "offset",
+      "source": "observed by running KickAss.jar 5.25: sector 18/0, format=dolphindos"
+    },
+    {
+      "name": "asminfo_library_lines",
+      "group": "asminfo",
+      "value": 352,
+      "unit": "count",
+      "source": "observed by running KickAss.jar 5.25: -asminfo libraries"
+    },
+    {
+      "name": "asminfo_directive_lines",
+      "group": "asminfo",
+      "value": 55,
+      "unit": "count",
+      "source": "observed by running KickAss.jar 5.25: -asminfo directives"
+    },
+    {
+      "name": "max_call_depth",
+      "group": "limits",
+      "value": 10000,
+      "unit": "count",
+      "source": "estimated, R65 only: the original has no limit and runs out of Java stack"
+    },
+    {
+      "name": "error_list_lines",
+      "group": "errors",
+      "value": 5,
+      "unit": "count",
+      "source": "observed by running KickAss.jar 5.25: more errors end with a line of three dots"
     }
   ]
 }

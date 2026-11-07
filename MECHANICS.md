@@ -145,9 +145,13 @@ flags/startpage/pagelength only for version ≥ 2. Big-endian.
 
 ## Output files
 
-- Symbol file (`.sym`, CRLF lines): labels of the root namespace as
-  `.label name=$hex`, a label with its own scope gets `{ … }` with two spaces
-  indent (`SymbolFile.writeScope`); scopes of other namespaces stay empty.
+- Symbol file (`.sym`, CRLF lines), observed with KickAss.jar 5.25: `SymbolFile.writeScope`
+  goes over `getLocalDefinedEntities`, a Java `HashMap`, so each scope has the order of
+  `java_bucket`, with namespaces among the labels. `.label name=$addr`, with
+  `.namespace n {` / `}` and `.label name=$addr {` / `}` around inner scopes and a 2 space
+  indent per level. `.var` and `.const` aren't written. An empty namespace is written. The
+  body of a labelled macro call stays empty (`.label mc=$200b {`, `}`), because it has its
+  own symbol table. Loop labels and `.lohifill` labels have no braces.
 - VICE file (`.vs`): `al C:<hex> .<name>`, names used more than once get
   `__0`, `__1`…; `break <hex> <arg>`; `watch <arg> <a1> <a2> `
   (`ViceSymbolFile`).
@@ -196,3 +200,119 @@ flags/startpage/pagelength only for version ≥ 2. Big-endian.
 
 Java plugins (`.plugin`, `.modify`, `.filemodify` with plugin modifiers) need a
 Java runtime and are reported as errors.
+
+## Observed by running KickAss.jar 5.25
+
+These were all compared by running the original (`D:\Development\KickAss\KickAss.jar`) and
+R65 on the same sources, also where the original's manual says something else. See section 22
+of the manual for what is still different.
+
+- Line breaks: inside `( )` and `[ ]` they mean nothing. Elsewhere they end the statement, also
+  after an operator or a comma (`Syntax error`).
+- Statement start: `Invalid token`; `#` gives `Token must be an identifer` at the next token.
+  A plain `x = 2`, `x++`, `x += 2`, `l.add(1)` or `s.m()` is a `Syntax error` at the operator.
+  `l[0]` is a call of the pseudocommand `l`.
+- Brackets are checked per source file. `Missing start token` at a closing bracket without a
+  pair or of another kind, `Missing end token` at the opening one that's left at the end.
+- Names: `The symbol 'x' is already defined`, found before the first pass (no `flex pass 1`),
+  at the column of the name. Label, `.var`, `.const`, `.label`, `.enum` item, `.define` name,
+  operand label and parameter share one set per scope, also in macros that are never called and
+  in false `.if` branches. Reopened namespaces share a set, and the namespace's own name is in
+  the outer set. `.file`, `.zp` and `.pseudopc` have no set of their own. `@x` shows as `'@x'`.
+- Member access: only labels (also `.label`) and namespaces are reached with a dot; `.lohifill`
+  has `lo` and `hi`. Otherwise `Variable 'x' not present on value of type 'T'`, with T =
+  `LabelValue`, `Namespace`, `ScopeValue` (`l[0]`), `number` or `struct`. A method there is
+  `Unknown function : f`.
+- `.z`: `'jmp' does not support mode 'zeropage'` (also `zeropageX`, `zeropageY`), at the mnemonic.
+- `getType` of `($10,x)` is -5. No argument reports `AT_IZEROPAGEX` (5).
+- Operators: a left value without the operator gives `Unknown function : -`, and so do unary
+  ones (at the operator). A wrong right value gives `Can't get a double representation from a
+  value of type boolean` (lower case `boolean`). `Vector+1` gives `Can't get a vector from value of type number`.
+- `.byte`, `.word`, `.dword`: a value that can't be written is reported at the directive.
+- Calls: `Macro command 'x' not defined`, `Pseudo command 'x' not defined`, `Invalid number of
+  arguments for macro`, `Too many arguments for pseudo command`, `Invalid number of arguments for
+  function 'f'`, `Invalid number of arguments : size` (methods). Definitions: `The function 'f'
+  is already defined.`, `The macro 'f'  is already defined`, `The pseudo command 'f'  is already
+  defined` (two spaces). These come before the first pass.
+- Recursion: the original has no limit, and a run out of Java stack ends with exit code 1.
+  `sum(500)` and macro depth 300 work, `sum(2000)` doesn't. R65's limit of 10000 calls and its
+  `Too deep recursion` text are its own (estimated, not from the original).
+- Locked values: `You can't modify a locked value`. `Hashtable().lock()` then `.put` is allowed.
+- `.const` doesn't lock a value, `.define` does.
+- Asserts with code: `name -- OK. | 2000:ad,00,10`, `name -- FAILED! | 2000:ad,00,10  -- 2000:ae,00,10`
+  (two spaces), blocks joined by `; `. Labels in the blocks appear in the `.vs` file.
+  `.asserterror` without an error: `name -- FAILED!` for code, `name -- ERROR IN ASSERTION!` for a value.
+- Missing files: `Can't open file: x` for `#import` (at the string) and `.import source`
+  (at the directive); `Can't open file 'x'` for binary files; `Can't locate file 'x'` for
+  `LoadPicture`. `prgFiles` and `sidFiles` are read after `flex pass 1`, also for unused
+  segments, and reported at the parameter.
+- Segment limits: `In segment 'D' the memoryblock 'D' ($c000-$d7ff) is out of segment bounds
+  ($c000-$cfff).`, without a position, after `Output pass`. `min` defaults to `$0000`, a missing
+  `max` prints as `($1000- )`. All segments count, also unwritten ones, virtual blocks and the
+  blocks from `segments=` and `prgFiles`. Names of the others: `<<.file:o.prg>>`,
+  `<<.diskfile-0>>`, `<<.segmentout:0>>`.
+- `.segmentout` needs one more flex pass, and a shorter instruction doesn't by itself.
+- Disk images: only `prg` has a start address by default. BAM of tracks 36-40 in sector 18/0:
+  speeddos at `$b0`, dolphindos at `$c4`. An empty directory sector starts `00 00`. With
+  `storeFilesInDir`, track 18 comes in track order after 17. `showInfo`: `Info for disk 'X'` and
+  `  "A", sectors=1, startTS=1:0`. Bad format: `Unknown litteral 'cbm'` at the parameter. Errors
+  while generating: `Writing d64 file: x.d64`, then `Error while generating 'x.d64': ...`
+  without a position, and the file is left with 0 bytes. No filename: `Paremter 'filename' is missing.`
+- Command line: a second source name gives `Warning. Already have an inputfile. Won't use 'x'`.
+  `-cfgfile` with a missing file gives `Warning. Can't find configfile : x`. `-debug` prints
+  nothing extra in the cases tried. `-execute` doesn't wait, also with `-executelog`, which is
+  created even if the program can't start (`Error while executing external program: ...`, exit 0).
+- `-asminfo`: sections in the order version, libraries, directives, ppdirectives, errors,
+  syntax, files; CRLF lines. Bad selection: `Invalid asminfo type: x`. `[files]` only names what
+  errors and syntax use: first the file of the error, then the main source, its imports, the
+  built-in macros last. `-asminfotostdout` prints a blank line and `### ASMINFO START ###` ... `### ASMINFO END ###`.
+  The 352 lines of `[libraries]` are in `src/asminfo_libraries.txt`.
+- `-debugdump` (`<name>.dbg`): 3 space indent levels, `<Sources>`, a `<Segment>` per segment,
+  entries `$1000,$1000,1,2,8,2,10` that end at the mnemonic or directive name, `<Labels>` with the
+  code labels, `<Breakpoints>`, `<Watchpoints>`, blank lines between sections.
+- Error list, observed: `Got N errors and 0 warnings while executing:` after `parsing`, at most 5 lines and then `  ...`, then the
+  normal text of the first error. Lines are `  (<full path> line:col) Error: text`, or `  Error: text` without a position. One error
+  gets no list. `-asminfo errors` has all errors, and the end column of `.name` is the end of the name.
+- Order, observed: errors of reading the source (preprocessor, tokens, brackets, parser, in stream order), then names defined twice and
+  `Can't define ... here`, then references. A parse error doesn't stop the later groups. Overlaps and then limits are listed the same way.
+- Recovery, observed: after a parse error the rest of the statement goes, up to the line end, a `;` outside brackets or a `}`, with any
+  nested `{ }`. `.if (+) { }` keeps its body with a false condition. A failed single statement body adds `If without body`,
+  `Else without body` or `Directive missing body` (not for `.while`). Differs: the original can report more on a line that starts
+  with `!word`, as ACME code does; see `tests/kickass_gaps.rs`.
+- Brackets, observed: a closer without its pair gives `Missing start token` and is removed. Each opener left at the end of a file gives
+  `Missing end token`, innermost first. Line ends inside `( )` and `[ ]` don't count.
+- Syntax, observed: there's no unary `+`. A character that starts no token is `Syntax error` where a value is expected and `Invalid token`
+  at the start of a statement. A `.` after a space still means a field or method: `.var a=1 .print a` fails at the last `a`.
+  `else` needs a `}` or a line end before it, otherwise it's a name: `.if (x) nop else nop` fails. `.for` needs its condition.
+  `.print` needs an argument, and `.byte` doesn't.
+- Line end after a directive name, observed: `Unexpected end of line` for `.var .const .label .pc .import .segment .segmentdef .segmentout
+  .disk .file .modify .if .for`; `Comma seperator expected` for `.fill`; `Invalid number of arguments.` for `.lohifill .errorif`;
+  `Missing second argument` for `.assert .asserterror`; `Missing page size argument` for `.align`; `Token must be an identifer` for
+  `.cpu`; `First argument must be present.` for `.watch`. `.macro .function .pseudocommand .namespace .struct .define` read the name from
+  the next line and report `Unexpected end of source` with an `<EOF>` source line when nothing follows it. `.enum .while .zp` report
+  `Invalid token` at the next line.
+- Inside `.function` and `.define`, observed: code directives give `Invalid directive`, instructions, labels and macro calls give
+  `Invalid token`. `.return` elsewhere gives `Invalid directive`.
+- Name check before the first pass, observed; `src/names.rs`. New scopes: `{ }`, `.if` branches also without braces, `.for`, `.while`,
+  bodies, `.label x = e { }`, assert blocks, `.define`. The same scope: `.file`, `.zp`, `.pseudopc`. Each opening of a namespace shares
+  its names. `.asserterror` isn't checked, and its names report as `x -- OK. | Unknown symbol 'foo'` when it runs. For a field,
+  method or index only the head is checked. Call arguments come before the function.
+- `Reference to not yet defined symbol 'x'`, observed: a `.var`, `.const`, `.enum` value or `.define` name found in the innermost scope
+  that has it, before its declaration, also when an outer one exists. Across a macro or function body there's no such check. If the
+  body runs too early, a `.var` is `null` and the others report `Symbol is not yet initialized`.
+- Multi labels, observed: `!+` and `!-` look along the scope chain in source order, also when the label comes after a macro definition.
+- Definitions, observed: `.function`, `.macro` and `.pseudocommand` only directly in a namespace, `.file`, `.zp` or `.pseudopc`,
+  otherwise `Can't define a macro here. ...`, and such a macro isn't registered. A `.struct` is allowed anywhere and belongs to the namespace.
+- Calls, observed: `Unknown function 'f'`, `Invalid number of arguments for function 'f'`, `Macro command 'm' not defined`,
+  `Invalid number of arguments for macro`, `Pseudo command 'p' not defined`, `Too many arguments for pseudo command`. `m` doesn't
+  call a macro, and `p()` doesn't call a pseudocommand. There's no `IdentityMatrix`, whatever the manual says.
+- Static errors, observed: `Invalid cpu name.` at the name, `Unknown extension: q` at the mnemonic.
+- At run time, observed: `Unknown modifier 'foo'` in `.segment` and `.segmentdef`, `Unknown modifyer: foo` in `.modify`,
+  `Undefined segment 'A'` for `.segment A` without parameters and earlier definition, `Subsegment 'A' not defined.` after `Output pass`,
+  `Value can't be resolved` at the first use of a `.label` that only depends on itself, after `flex pass 2`.
+- Method arguments, observed: size, toLowerCase, toUpperCase, asBoolean, number, string, shuffle, reverse, sort, lock, keys, getX, getY, getZ
+  take 0; charAt, get, addAll, remove, containsKey, X take 1; substring and list set take 2; asNumber 0 or 1; matrix get 2, set 3.
+  Otherwise `Invalid number of arguments : name`. `add` and `put` take any number.
+- Overlap text, observed: the block with the lower start comes first. With the same start, the later one comes first.
+- A branch that is too far, estimated from the results: it's only an error with final values. R65 runs one quiet extra pass to report it.
+- File names, observed: the list shows the full path, the text under it the path relative to the source's folder, with `\` on Windows.

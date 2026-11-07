@@ -125,11 +125,30 @@ r65 border.asm -showmem
 
 - Java plugins aren't supported, so `.plugin` and plugin modifiers report an error.
 - Progressive or subsampled JPEG pictures may differ slightly from the original.
-- There are no automated tests yet.
 
-Run `r65 --help limits` for the current list.
+Run `r65 --help limits` for the current list. The manual lists every known
+difference from the Kick Assembler reference manual, in
+[section 22](docs/R65-Manual.md#22-limitations).
+
+## Tests
+
+```bash
+cargo test
+```
+
+The tests run the real program and check exact bytes, log text and exit codes. They
+also assemble every example in the manuals and check the opcode tables against them.
+The `tests/kickass_gaps.rs` tests describe what the original does and R65 doesn't do yet. They're ignored by
+default, and fail when you run them:
+
+```bash
+cargo test --test kickass_gaps -- --ignored
+```
 
 ## Documentation
+
+The [assembly language manual](docs/R65-Manual.md) describes the whole language, and
+it's also available [in Hungarian](docs/R65-Manual.hu.md).
 
 [MECHANICS.md](MECHANICS.md) explains how the assembler works and where each
 compatibility rule comes from in the original program.

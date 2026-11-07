@@ -39,14 +39,18 @@ fn hex(v: i64) -> String {
 }
 
 // ------------------------------------------------------------ memory map
-pub fn memory_map(asm: &Asm) -> String {
+pub fn memory_map(asm: &mut Asm) -> String {
     let mut parts = vec![];
-    for sg in &asm.segs {
-        if sg.p.hide {
+    for i in 0..asm.segs.len() {
+        let p = asm.segs[i].p.clone();
+        if p.hide {
             continue;
         }
-        // all blocks, also empty ones, by start address (SegmentManager.printMemoryBlocks)
-        let mut bl: Vec<&Blk> = sg.blocks.iter().collect();
+        // all blocks, also empty ones, by start address (SegmentManager.printMemoryBlocks),
+        // and the files the segment loads; a file that can't be read is reported where it's used
+        let from_files = asm.file_blocks(&p, p.pos).unwrap_or_default();
+        let sg = &asm.segs[i];
+        let mut bl: Vec<&Blk> = sg.blocks.iter().chain(from_files.iter()).collect();
         if bl.is_empty() {
             continue;
         }
@@ -146,20 +150,34 @@ pub fn vice_symbols(asm: &Asm) -> String {
 
 const NL: &str = "\r\n";
 
+/// SymbolFile.writeScope: the names of a scope in the order of a Java HashMap, namespaces among
+/// them. The body of a macro or function call stays empty (it has its own symbol table).
 fn sym_scope(asm: &Asm, id: u32, depth: usize, out: &mut String, guard: &mut Vec<u32>) {
     if guard.contains(&id) || depth > 32 {
         return;
     }
-    guard.push(id);
-    let ind = "  ".repeat(depth);
     let sc = &asm.scopes[id as usize];
-    // like the original, only symbols of the root namespace are listed
-    if sc.ns != 0 {
-        guard.pop();
+    if sc.call_scope {
         return;
     }
-    for n in &sc.order {
+    guard.push(id);
+    let ind = "  ".repeat(depth);
+    let mut cap = HASHMAP_INITIAL_CAPACITY;
+    while sc.order.len() as f64 > cap as f64 * HASHMAP_LOAD_FACTOR {
+        cap *= 2;
+    }
+    let mut names: Vec<&String> = sc.order.iter().collect();
+    names.sort_by_key(|n| java_bucket(n, cap));
+    for n in names {
         let sy = &sc.syms[n];
+        if let Val::Scope(s) = &sy.val {
+            if let Some(nm) = &asm.scopes[*s as usize].ns_name {
+                out.push_str(&format!("{}.namespace {} {{{}", ind, nm, NL));
+                sym_scope(asm, *s, depth + 1, out, guard);
+                out.push_str(&format!("{}}}{}", ind, NL));
+            }
+            continue;
+        }
         if sy.kind != SymKind::Label {
             continue;
         }
@@ -177,16 +195,6 @@ fn sym_scope(asm: &Asm, id: u32, depth: usize, out: &mut String, guard: &mut Vec
                 out.push_str(&format!("{}}}{}", ind, NL));
             }
             None => out.push_str(NL),
-        }
-    }
-    // namespaces declared directly inside this scope
-    for (i, s) in asm.scopes.iter().enumerate() {
-        if s.parent == Some(id) {
-            if let Some(nm) = &s.ns_name {
-                out.push_str(&format!("{}.namespace {} {{{}", ind, nm, NL));
-                sym_scope(asm, i as u32, depth + 1, out, guard);
-                out.push_str(&format!("{}}}{}", ind, NL));
-            }
         }
     }
     guard.pop();
@@ -331,6 +339,25 @@ pub struct DiskFile {
     pub interleave: usize,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum DiskFormat {
+    Commodore,
+    SpeedDos,
+    DolphinDos,
+}
+
+#[derive(Clone, Copy)]
+pub struct DiskOpts {
+    pub format: DiskFormat,
+    /// a file that would have sectors on both sides of the directory track moves after it
+    pub dont_split_over_dir: bool,
+    /// also use the free sectors of the directory track, when the files get there
+    pub store_in_dir: bool,
+}
+
+/// where a file went: first track, first sector and number of sectors
+pub type Placed = (usize, usize, usize);
+
 /// A standard 35 track disk image, laid out like D64Image.generateImage:
 /// - at most 8 x 19 = 152 visible files ("Too many visible files. Got N, max is M.")
 /// - the directory uses consecutive sectors 18/1, 18/2, ... (8 entries each)
@@ -338,9 +365,13 @@ pub struct DiskFile {
 ///   after each sector the next one is searched from sector + interleave (wrapping in the
 ///   track), a new track starts at sector 0, and the next file continues where the last stopped
 /// - an empty file takes no sectors (track/sector 0, 0 blocks)
-pub fn make_d64(name: &str, id: &str, files: &[DiskFile]) -> Result<Vec<u8>, String> {
-    let mut img = vec![0u8; 683 * 256];
-    let mut used = vec![vec![false; 21]; 36];
+///
+/// The speeddos and dolphindos formats have 40 tracks and keep the BAM of tracks 36-40 in
+/// sector 18/0 at $b0 and $c4 (observed).
+pub fn make_d64(name: &str, id: &str, files: &[DiskFile], opts: DiskOpts) -> Result<(Vec<u8>, Vec<Placed>), String> {
+    let last_track = if opts.format == DiskFormat::Commodore { 35 } else { 40 };
+    let mut img = vec![0u8; ts_offset(last_track + 1, 0)];
+    let mut used = vec![vec![false; 21]; last_track + 1];
     used[18][0] = true;
     let visible = files.iter().filter(|f| !f.hide).count();
     let max_files = 8 * sectors_in(19);
@@ -352,9 +383,15 @@ pub fn make_d64(name: &str, id: &str, files: &[DiskFile]) -> Result<Vec<u8>, Str
     }
     let mut track = 1usize;
     let mut sec = 0usize;
-    // (first track, first sector, number of sectors) per file
-    let mut placed: Vec<(usize, usize, usize)> = vec![];
+    let mut placed: Vec<Placed> = vec![];
     for f in files {
+        if opts.dont_split_over_dir && track < 18 {
+            let free: usize = (track..18).map(|t| (0..sectors_in(t)).filter(|s| !used[t][*s]).count()).sum();
+            if f.data.len().div_ceil(254) > free {
+                track = 19;
+                sec = 0;
+            }
+        }
         let mut first = (0usize, 0usize);
         let mut count = 0usize;
         let mut prev: Option<usize> = None;
@@ -366,10 +403,10 @@ pub fn make_d64(name: &str, id: &str, files: &[DiskFile]) -> Result<Vec<u8>, Str
                 }
                 track += 1;
                 sec = 0;
-                if track == 18 {
+                if track == 18 && !opts.store_in_dir {
                     track = 19;
                 }
-                if track == 36 {
+                if track > last_track {
                     return Err("Disk is full!".into());
                 }
             };
@@ -423,16 +460,12 @@ pub fn make_d64(name: &str, id: &str, files: &[DiskFile]) -> Result<Vec<u8>, Str
         }
         remaining -= 1;
     }
-    if visible == 0 {
-        let o = ts_offset(18, 1);
-        img[o + 1] = 0xff;
-    }
     // BAM
     let b = ts_offset(18, 0);
     img[b] = 18;
     img[b + 1] = 1;
     img[b + 2] = 0x41;
-    for t in 1..=35 {
+    for t in 1..=last_track {
         let n = sectors_in(t);
         let mut bits = 0u32;
         let mut free = 0;
@@ -442,7 +475,11 @@ pub fn make_d64(name: &str, id: &str, files: &[DiskFile]) -> Result<Vec<u8>, Str
                 free += 1;
             }
         }
-        let o = b + 4 * t;
+        let o = match (t, opts.format) {
+            (36.., DiskFormat::SpeedDos) => b + 0xb0 + 4 * (t - 36),
+            (36.., _) => b + 0xc4 + 4 * (t - 36),
+            _ => b + 4 * t,
+        };
         img[o] = free;
         img[o + 1] = (bits & 0xff) as u8;
         img[o + 2] = ((bits >> 8) & 0xff) as u8;
@@ -456,7 +493,74 @@ pub fn make_d64(name: &str, id: &str, files: &[DiskFile]) -> Result<Vec<u8>, Str
     for k in 0xa7..0xab {
         img[b + k] = 0xa0;
     }
-    Ok(img)
+    Ok((img, placed))
+}
+
+// ------------------------------------------------------------ debug dump
+fn xml(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The column where the word at a source position ends: a mnemonic or a directive's name.
+fn word_end(asm: &Asm, p: Pos) -> u32 {
+    let Some(text) = asm.src.files.get(p.file).and_then(|f| f.lines.get(p.line.saturating_sub(1) as usize)) else { return p.col };
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = p.col.saturating_sub(1) as usize;
+    if chars.get(i) == Some(&'.') || chars.get(i) == Some(&'*') {
+        i += 1;
+    }
+    while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+        i += 1;
+    }
+    (i as u32).max(p.col)
+}
+
+/// The -debugdump file, for C64 Debugger (DebugDumpWriter).
+pub fn debug_dump(asm: &Asm) -> String {
+    let mut out = String::from("<C64debugger version=\"1.0\">\n   <Sources values=\"INDEX,FILE\">\n");
+    for i in 0..asm.src.files.len() {
+        out.push_str(&format!("      {},{}\n", i, xml(&asm.src.full(i))));
+    }
+    out.push_str("   </Sources>\n\n");
+    for sg in &asm.segs {
+        out.push_str(&format!("   <Segment name=\"{}\" dest=\"\" values=\"START,END,FILE_IDX,LINE1,COL1,LINE2,COL2\">\n", xml(&sg.name)));
+        let mut bl: Vec<&Blk> = sg.blocks.iter().filter(|b| !b.virt && !b.bytes.is_empty()).collect();
+        bl.sort_by_key(|b| b.start);
+        for b in bl {
+            out.push_str(&format!("      <Block name=\"{}\">\n", xml(&b.name)));
+            for d in b.dump.iter().filter(|d| d.len > 0) {
+                let from = b.start + d.off as i64;
+                out.push_str(&format!(
+                    "         ${:04x},${:04x},{},{},{},{},{}\n",
+                    from,
+                    from + d.len as i64 - 1,
+                    d.pos.file,
+                    d.pos.line,
+                    d.pos.col,
+                    d.pos.line,
+                    word_end(asm, d.pos)
+                ));
+            }
+            out.push_str("      </Block>\n");
+        }
+        out.push_str("   </Segment>\n\n");
+    }
+    out.push_str("   <Labels values=\"SEGMENT,ADDRESS,NAME,START,END,FILE_IDX,LINE1,COL1,LINE2,COL2\">\n");
+    for (seg, addr, name, p) in &asm.placed_labels {
+        let end = p.col + name.chars().count() as u32;
+        out.push_str(&format!("      {},${:04x},{},{},{},{},{},{}\n", xml(seg), addr, xml(name), p.file, p.line, p.col, p.line, end));
+    }
+    out.push_str("   </Labels>\n\n   <Breakpoints values=\"SEGMENT,ADDRESS,ARGUMENT\">\n");
+    for b in &asm.breaks {
+        out.push_str(&format!("      Default,${:04x},{}\n", b.addr, xml(&b.arg.clone().unwrap_or_default())));
+    }
+    out.push_str("   </Breakpoints>\n\n   <Watchpoints values=\"SEGMENT,ADDRESS1,ADDRESS2,ARGUMENT\">\n");
+    for w in &asm.watches {
+        let a2 = w.a2.map(|x| format!("${:04x}", x)).unwrap_or_default();
+        out.push_str(&format!("      Default,${:04x},{},{}\n", w.a1, a2, xml(&w.arg.clone().unwrap_or_default())));
+    }
+    out.push_str("   </Watchpoints>\n\n</C64debugger>\n");
+    out
 }
 
 // ------------------------------------------------------------ writing everything
@@ -492,13 +596,14 @@ fn write(path: &Path, data: &[u8]) -> R<()> {
     })
 }
 
-/// Writes the program files and disk images. Returns the log lines.
-pub fn write_outputs(asm: &mut Asm, o: &OutOpts) -> R<Vec<String>> {
+/// Writes the program files and disk images. The log lines stay when an error comes after them.
+pub fn write_outputs(asm: &mut Asm, o: &OutOpts, log: &mut Vec<String>) -> R<()> {
     DRY.with(|d| d.set(o.dry));
-    let mut log = vec![];
     let dir = asm.cfg.out_dir.clone();
     // (file name, blocks, prg?, mbfiles, fill)
     let mut files: Vec<(String, Vec<Blk>, bool, bool, u8)> = vec![];
+    // %o in a file name stands for the name of the root source file
+    let base = Path::new(&asm.cfg.src_name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let default_used = asm.segs.len() == 1 || asm.segs[0].blocks.iter().any(|b| !b.bytes.is_empty());
     if default_used {
         let name = o.out_file.to_string_lossy().to_string();
@@ -510,18 +615,17 @@ pub fn write_outputs(asm: &mut Asm, o: &OutOpts) -> R<Vec<String>> {
         for (f, prg) in [(&p.out_prg, true), (&p.out_bin, false)] {
             if let Some(f) = f {
                 let blocks = asm.segment_blocks(name, p.pos, false, 0)?;
-                files.push((f.clone(), blocks, prg, false, p.fill_byte));
+                files.push((f.replace("%o", &base), blocks, prg, false, p.fill_byte));
             }
         }
     }
     let reqs = asm.file_reqs.clone();
-    let base = Path::new(&asm.cfg.src_name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     for p in &reqs {
         let name = p.name.clone().unwrap_or_default().replace("%o", &base);
         if files.iter().any(|f| f.0 == name) {
             return Err(AsmError { pos: Some(p.pos), msg: format!("The file '{}' is already defined", name), called: vec![] });
         }
-        let blocks = asm.intermediate_blocks(p, p.pos, false)?;
+        let blocks = asm.intermediate_blocks(p, &format!("<<.file:{}>>", p.name.clone().unwrap_or_default()), p.pos, false)?;
         let prg = p.ftype.as_deref().unwrap_or("prg") != "bin";
         files.push((name, blocks, prg, p.mbfiles, p.fill_byte));
     }
@@ -555,16 +659,24 @@ pub fn write_outputs(asm: &mut Asm, o: &OutOpts) -> R<Vec<String>> {
     let disks: Vec<(SegParams, Vec<SegParams>)> = asm.disk_reqs.iter().map(|d| (d.p.clone(), d.files.clone())).collect();
     for (dp, fps) in disks {
         let fname = match dp.other.get("filename") {
-            Some(v) => v.to_str(),
+            Some(v) => v.to_str().replace("%o", &base),
             None => return Err(AsmError { pos: Some(dp.pos), msg: "Missing the 'filename' parameter of the disk".into(), called: vec![] }),
         };
+        let format = match dp.other.get("format").map(|v| v.to_str()).as_deref() {
+            None | Some("commodore") => DiskFormat::Commodore,
+            Some("speeddos") => DiskFormat::SpeedDos,
+            Some("dolphindos") => DiskFormat::DolphinDos,
+            Some(f) => return Err(AsmError { pos: Some(dp.format_pos), msg: format!("Unknown litteral '{}'", f), called: vec![] }),
+        };
+        let flag = |n: &str| dp.other.get(n).map(|v| matches!(v, Val::Bool(true, _))).unwrap_or(false);
+        let opts = DiskOpts { format, dont_split_over_dir: flag("dontSplitFilesOverDir"), store_in_dir: flag("storeFilesInDir") };
         let interleave = dp.other.get("interleave").and_then(|v| v.as_f64()).unwrap_or(10.0) as i64;
         if interleave < 0 {
             return Err(AsmError { pos: Some(dp.pos), msg: format!("Interleave can't be negative: {}", interleave), called: vec![] });
         }
         let mut dfiles = vec![];
-        for fp in &fps {
-            let blocks = asm.intermediate_blocks(fp, fp.pos, false)?;
+        for (i, fp) in fps.iter().enumerate() {
+            let blocks = asm.intermediate_blocks(fp, &format!("<<.diskfile-{}>>", i), fp.pos, false)?;
             let mut t = fp.ftype.clone().unwrap_or_else(|| "prg".into()).to_lowercase();
             let locked = t.ends_with('<');
             if locked {
@@ -592,16 +704,22 @@ pub fn write_outputs(asm: &mut Asm, o: &OutOpts) -> R<Vec<String>> {
         log.push(format!("Writing d64 file: {}", fname));
         let name = dp.name.clone().unwrap_or_else(|| "UNNAMED".into());
         let id = dp.other.get("id").map(|v| v.to_str()).unwrap_or_else(|| "   2A".into());
-        let img = make_d64(&name, &id, &dfiles).map_err(|e| AsmError {
-            pos: Some(dp.pos),
-            msg: format!("Error while generating '{}': {}", fname, e),
-            called: vec![],
+        let (img, placed) = make_d64(&name, &id, &dfiles, opts).map_err(|e| {
+            // the original has opened the file by then, so it stays empty
+            let _ = write(&resolve(&dir, &fname), &[]);
+            AsmError { pos: None, msg: format!("Error while generating '{}': {}", fname, e), called: vec![] }
         })?;
+        if flag("showInfo") {
+            log.push(format!("Info for disk '{}'", name));
+            for (f, (t, s, n)) in dfiles.iter().zip(&placed) {
+                log.push(format!("  \"{}\", sectors={}, startTS={}:{}", f.name, n, t, s));
+            }
+        }
         write(&resolve(&dir, &fname), &img)?;
     }
     // text files made with createFile()
     for f in asm.out_files.clone() {
         write(&f.path, f.text.borrow().as_bytes())?;
     }
-    Ok(log)
+    Ok(())
 }
