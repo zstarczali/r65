@@ -4,23 +4,9 @@
 //! Without a source file it says so and exits with code 1, like the original.
 //! `--gui [file]` opens the optional editor window, `--screenshot <png>` grabs it.
 
-mod asminfo;
-mod names;
-mod ast;
-mod builtins;
-mod driver;
-mod enc;
-mod eval;
-mod exec;
-mod gui;
-mod help;
-mod jpeg;
-mod lexer;
-mod output;
-mod parser;
-mod preproc;
-mod tables;
-mod value;
+use r65::{driver, help};
+#[cfg(feature = "gui")]
+use r65::gui;
 
 use std::path::PathBuf;
 
@@ -68,8 +54,15 @@ fn main() {
         if let Some(f) = rest.iter().find(|a| !a.starts_with('-')) {
             gui_file = Some(PathBuf::from(f));
         }
+        #[cfg(feature = "gui")]
         if let Err(e) = gui::run(gui_file, shot) {
             eprintln!("Couldn't open the window: {}", e);
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "gui"))]
+        {
+            let _ = (gui_file, shot);
+            eprintln!("Couldn't open the window: this r65 was built without the window (feature gui)");
             std::process::exit(1);
         }
         return;
