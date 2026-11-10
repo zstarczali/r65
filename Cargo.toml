@@ -3,10 +3,23 @@ name = "r65"
 version = "1.0.0"
 edition = "2024"
 
+[lib]
+name = "r65"
+path = "src/lib.rs"
+
+[[bin]]
+name = "r65"
+path = "src/main.rs"
+
+[features]
+# the editor window (--gui); a program that only assembles (r65::build) turns it off
+default = ["gui"]
+gui = ["dep:eframe", "dep:rfd"]
+
 [dependencies]
-eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"], optional = true }
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }
-rfd = "0.15"
+rfd = { version = "0.15", optional = true }
 
 [build-dependencies]
 embed-resource = "3"

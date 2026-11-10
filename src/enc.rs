@@ -45,6 +45,12 @@ fn make(table: &[u32], screen: bool) -> HashMap<char, u8> {
     m
 }
 
+impl Default for Encodings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Encodings {
     pub fn new() -> Self {
         let mut ascii = HashMap::new();

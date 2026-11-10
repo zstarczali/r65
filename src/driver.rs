@@ -85,6 +85,8 @@ pub struct Options {
     pub pseudo_c3x: bool,
     /// for the log, right after the start-up text
     pub warnings_at_start: Vec<String>,
+    /// Outcome::extra (labels, byte sources, debugger files) for a program that embeds R65
+    pub extra: bool,
 }
 
 impl Default for Options {
@@ -124,6 +126,7 @@ impl Default for Options {
             execute_log: None,
             pseudo_c3x: false,
             warnings_at_start: vec![],
+            extra: false,
         }
     }
 }
@@ -344,6 +347,25 @@ pub struct Outcome {
     pub syntax: Vec<crate::asminfo::SyntaxEntry>,
     /// every error: file index, line, column, the column where its word ends, message
     pub errors: Vec<(usize, u32, u32, u32, String)>,
+    /// after a successful assembly, for a program that embeds R65 (r65::build)
+    pub extra: Option<Extra>,
+}
+
+/// What an editor needs besides the program: labels, the source of each byte, debugger files.
+#[derive(Default, Debug, Clone)]
+pub struct Extra {
+    /// placed labels: segment, address, name, file index, line
+    pub labels: Vec<(String, i64, String, usize, u32)>,
+    /// the bytes of a source position in the Default segment: address, length, file index, line,
+    /// column, the source text from the column (as -bytedump shows it)
+    pub spans: Vec<(i64, usize, usize, u32, u32, String)>,
+    /// .print / .printnow output
+    pub prints: Vec<String>,
+    pub warnings: Vec<(usize, u32, u32, String)>,
+    /// the -vicesymbols, -debugdump and -symbolfile texts
+    pub vice_symbols: String,
+    pub debug_dump: String,
+    pub symbol_file: String,
 }
 
 /// Scripts can recurse deeply (see MAX_CALL_DEPTH), and each script call takes many Rust calls.
@@ -625,6 +647,33 @@ fn assemble_here(o: &Options, text: Option<&str>, log: &Log) -> Outcome {
     if let Ok(bl) = asm.segment_blocks("Default", Pos::default(), false, 0) {
         let (lo, data) = output::flatten(&bl, o.fill_byte);
         out.image = Some((lo, data));
+    }
+    if o.extra {
+        let mut ex = Extra {
+            labels: asm.placed_labels.iter().map(|(seg, addr, name, p)| (seg.clone(), *addr, name.clone(), p.file, p.line)).collect(),
+            prints: asm.prints.clone(),
+            warnings: asm.warnings.iter().map(|w| (w.pos.file, w.pos.line, w.pos.col, w.msg.clone())).collect(),
+            vice_symbols: output::vice_symbols(&asm),
+            debug_dump: output::debug_dump(&asm),
+            symbol_file: output::sym_file(&asm),
+            ..Extra::default()
+        };
+        for sg in asm.segs.iter().filter(|sg| sg.name == "Default") {
+            for b in sg.blocks.iter().filter(|b| !b.virt) {
+                for d in b.dump.iter().filter(|d| d.len > 0) {
+                    let text = asm
+                        .src
+                        .files
+                        .get(d.pos.file)
+                        .and_then(|f| f.lines.get(d.pos.line.saturating_sub(1) as usize))
+                        .map(|l| l.chars().skip(d.pos.col.saturating_sub(1) as usize).collect::<String>().trim().to_string())
+                        .unwrap_or_default();
+                    ex.spans.push((b.start + d.off as i64, d.len, d.pos.file, d.pos.line, d.pos.col, text));
+                }
+            }
+        }
+        ex.spans.sort_by_key(|s| s.0);
+        out.extra = Some(ex);
     }
     let out_file = match &o.out_file {
         Some(f) if Path::new(f).is_absolute() => f.clone(),
