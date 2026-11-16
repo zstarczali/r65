@@ -5,7 +5,7 @@
 R65 is a KickAssembler compatible 6502 cross assembler for the Commodore 64. This manual describes the
 language that R65 accepts: how to write source files, every directive, the script library and the files that
 R65 produces. It describes what R65 does today. Where that differs from the Kick Assembler reference manual, section
-[22](#22-limitations) says so. For how the rules were derived from KickAss 5.25, see [MECHANICS.md](../MECHANICS.md).
+[22](#22-limitations) says so.
 
 All examples marked as assembly source in this manual are assembled by the automated tests.
 

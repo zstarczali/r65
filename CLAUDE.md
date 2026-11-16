@@ -56,14 +56,12 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → n
 
 ## Compatibility rules
 
-- `MECHANICS.md` explains each rule and its source in the original (class,
-  method, bytecode offset). `mechanics.json` holds the same values as data.
-  Read the relevant section before changing behaviour, and don't "correct" an
-  odd behaviour there without checking: many are deliberate, such as
+- The tests are the record of the rules. Don't "correct" an odd behaviour
+  without checking it against the original: many are deliberate, such as
   `-maxaddr` not being enforced, Java `HashMap` label order in `.vs` files,
   Java number printing and CRLF in `.sym` files.
-- When a rule changes or a new one is found, update both files. Say whether the
-  value was observed by running the original or only estimated.
+- When a rule changes or a new one is found, add or update a test for it, and say
+  whether the value was observed by running the original or only estimated.
 - Log and error text is part of the compatibility. Keep the wording, including
   the original's oddities such as `Made N asserts , M failed`.
 - Exit code is 0 on success and 1 on any error.
@@ -90,8 +88,9 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → n
 
 `.github/workflows/build.yml` builds Windows, macOS and Linux on x64 and arm64,
 and packages `.zip` or `.tar.gz` files; there is no MSI. It only runs when started
-by hand (`workflow_dispatch`), and a run started on a `v*` tag also publishes a
-GitHub release. It builds with `--locked`, so commit `Cargo.lock` whenever dependencies change. macOS x64 is
+by hand (`workflow_dispatch`) or when `release.yml` calls it. `release.yml`, also
+started by hand, checks the tag against the `Cargo.toml` version, builds, then
+creates the tag and a GitHub release with the packages and `SHA256SUMS`. It builds with `--locked`, so commit `Cargo.lock` whenever dependencies change. macOS x64 is
 cross compiled and is the only target without a smoke test.
 
 ## Code style

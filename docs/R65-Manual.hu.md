@@ -5,8 +5,7 @@
 Az R65 egy KickAssembler kompatibilis 6502 keresztassembler Commodore 64-re. Ez a kézikönyv azt a nyelvet írja le, amelyet
 az R65 elfogad: hogyan kell forrásfájlt írni, mit csinálnak a direktívák, mi van a script könyvtárban, és milyen fájlokat
 készít az R65. Azt írja le, amit az R65 ma csinál. Ahol ez eltér a Kick Assembler kézikönyvétől, azt a
-[22. fejezet](#22-korlátok) jelzi. Azt, hogy a szabályok hogyan származnak a KickAss 5.25-ből, a
-[MECHANICS.md](../MECHANICS.md) írja le.
+[22. fejezet](#22-korlátok) jelzi.
 
 A kézikönyv összes assembly forrásként jelölt példáját lefordítják az automatikus tesztek.
 

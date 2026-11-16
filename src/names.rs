@@ -2,7 +2,7 @@
 //!
 //! It also covers code that never runs, such as macros without a call and false `.if` branches.
 //! First come names defined twice and definitions in the wrong place, then the references, each
-//! group in source order. The rules were observed by running KickAss.jar 5.25, see MECHANICS.md.
+//! group in source order. The rules were observed by running KickAss.jar 5.25.
 
 use crate::ast::*;
 use crate::eval::AsmError;

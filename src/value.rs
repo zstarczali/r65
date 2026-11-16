@@ -251,7 +251,7 @@ pub fn sid_int(f: &[u8], at: usize, len: usize) -> u32 {
     v
 }
 
-// command argument type ids (same numbers as the original, see MECHANICS.md)
+// command argument type ids (same numbers as the original)
 pub const AT_NONE: i32 = 0;
 pub const AT_IMMEDIATE: i32 = 1;
 pub const AT_ZEROPAGE: i32 = 2;
