@@ -172,7 +172,7 @@ fn execute_runs_nothing_after_a_failure() {
     assert!(r.out.contains("Error while executing external program"), "{}", r.out);
 }
 
-/// `-maxaddr` is accepted but not enforced, see MECHANICS.md.
+/// `-maxaddr` is accepted but not enforced, like in the original.
 #[test]
 fn maxaddr_is_not_enforced() {
     let p = Project::new();

@@ -1,10 +1,11 @@
 # Builds r65 for Windows, macOS and Linux on x64 and arm64.
-# It only runs when started by hand. Every run keeps the packages as workflow
-# artifacts. A run started on a v* tag also publishes them as a GitHub release.
+# It only runs when started by hand, or when release.yml calls it. Every run
+# keeps the packages as workflow artifacts. Publishing is done by release.yml.
 name: Build
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -94,20 +95,3 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  release:
-    name: Publish release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "R65 $GITHUB_REF_NAME" --generate-notes

@@ -243,7 +243,7 @@ fn lex_line(file: usize, line: u32, text: &str, out: &mut Vec<Token>) -> Result<
                                 j += 1;
                             }
                             let v = u32::from_str_radix(&h, 16).unwrap_or(0);
-                            // raw byte values travel as chars from $800 upwards (see MECHANICS.md)
+                            // raw byte values travel as chars from $800 upwards
                             s.push(char::from_u32(0x800 + v).unwrap());
                         }
                         other => {

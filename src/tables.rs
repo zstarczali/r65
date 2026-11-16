@@ -1,5 +1,5 @@
 // Opcode tables per CPU. Columns: none, imm, zp, zpx, zpy, izx, izy, abs, absx, absy, ind, rel, izp, zprel, indx.
-// Extracted as data from the original program's CPU tables (see MECHANICS.md). -1 = not available.
+// Extracted as data from the original program's CPU tables. -1 = not available.
 
 pub const STD: &[(&str, [i16; 15])] = &[
     ("ora", [-1, 9, 5, 21, -1, 1, 17, 13, 29, 25, -1, -1, -1, -1, -1]),

@@ -320,11 +320,11 @@ pub struct Asm {
 pub const MAX_PASSES: u32 = 12;
 /// R65's own limit on nested calls. The original has none: it runs out of Java stack.
 pub const MAX_CALL_DEPTH: u32 = 10_000;
-/// where code goes when no *= was given (mechanics: default_block_start)
+/// where code goes when no *= was given
 pub const DEFAULT_BLOCK_START: i64 = 8192;
-/// the BASIC program area of the C64 (mechanics: basic_start)
+/// the BASIC program area of the C64
 pub const BASIC_START: i64 = 2049;
-/// the empty "Basic End" block opened by BasicUpstart2 (mechanics: basic_end_block)
+/// the empty "Basic End" block opened by BasicUpstart2
 pub const BASIC_END_BLOCK: i64 = 2062;
 
 impl Asm {

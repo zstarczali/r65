@@ -58,18 +58,20 @@ artifacts:
 gh workflow run build.yml --ref development
 ```
 
-A run started on a `v*` tag also publishes them as a GitHub release:
+A GitHub release is made by the separate `release.yml` workflow, also started by
+hand. It checks that the tag matches the version in `Cargo.toml`, builds every
+package, then creates the tag on the built commit and publishes the release with
+the packages, a `SHA256SUMS` file and generated release notes:
 
 ```bash
-git tag v1.0.0
+gh workflow run release.yml --ref main
 ```
 
-```bash
-git push origin v1.0.0
-```
+With no `tag` input, the tag is `v` followed by the version in `Cargo.toml`, such as
+`v1.0.0`. The `prerelease` and `draft` inputs are optional:
 
 ```bash
-gh workflow run build.yml --ref v1.0.0
+gh workflow run release.yml --ref main -f prerelease=true -f draft=true
 ```
 
 ## Usage
@@ -164,10 +166,6 @@ cargo test --test kickass_gaps -- --ignored
 
 The [assembly language manual](docs/R65-Manual.md) describes the whole language, and
 it's also available [in Hungarian](docs/R65-Manual.hu.md).
-
-[MECHANICS.md](MECHANICS.md) explains how the assembler works and where each
-compatibility rule comes from in the original program.
-[mechanics.json](mechanics.json) holds the same values as data.
 
 ## Copyright
 

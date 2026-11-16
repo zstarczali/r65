@@ -1,6 +1,6 @@
 //! Character encodings: ascii, petscii_mixed/upper, screencode_mixed/upper.
 //! The petscii tables come from the original; screen codes are derived from
-//! petscii with the same rule (see MECHANICS.md).
+//! petscii with the same rule as the original.
 
 use crate::tables::{PETSCII_MIXED, PETSCII_UPPER};
 use std::collections::HashMap;
