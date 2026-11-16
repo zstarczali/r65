@@ -170,3 +170,7 @@ it's also available [in Hungarian](docs/R65-Manual.hu.md).
 ## Copyright
 
 (C) 2026 Zsolt Tarczali
+
+## License
+
+MIT — see [LICENSE](LICENSE).
