@@ -8,6 +8,7 @@
   <a href="https://github.com/zstarczali/R65/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/zstarczali/R65/build.yml?label=build&logo=github" alt="Build"></a>
   <a href="https://github.com/zstarczali/R65/releases"><img src="https://img.shields.io/github/v/release/zstarczali/R65?include_prereleases&label=release" alt="Release"></a>
   <img src="https://img.shields.io/badge/version-1.0.0-blue" alt="Version 1.0.0">
+  <a href="https://github.com/zstarczali/R65/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Rust-2024_edition-orange?logo=rust" alt="Rust 2024 edition">
   <img src="https://img.shields.io/badge/KickAssembler-5.25_compatible-6c4fbb" alt="KickAssembler 5.25 compatible">
   <img src="https://img.shields.io/badge/CPU-6502%20%7C%2065C02%20%7C%20DTV-8a2be2" alt="CPU 6502, 65C02, DTV">
