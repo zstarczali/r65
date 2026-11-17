@@ -78,8 +78,9 @@ The flow is `main` → `driver::assemble` → preprocess → lex → parse → n
   `help.rs` and both manuals in `docs/` (`R65-Manual.md`, `R65-Manual.hu.md`). The
   manuals must keep the same `asm` examples, apart from `//` comments, and describe
   what R65 does today. Their section 22 lists the differences from Kick Assembler.
-- The version comes from `Cargo.toml`. The name and copyright are constants at the
-  top of `driver.rs`.
+- The version comes from `Cargo.toml`. The name, description and copyright are constants at the
+  top of `driver.rs`. `build.rs` reads them, with the version, license and repository from
+  `Cargo.toml`, and writes the Windows version information (the exe's Properties) with the icon.
 - The icon sources are the two SVGs in `assets/`. After changing one, run
   `python assets/make_icons.py` to rebuild `r65.ico` (embedded in the Windows exe
   by `build.rs`) and `r65-icon-256.png` (the window icon, included in `gui.rs`).
