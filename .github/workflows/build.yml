@@ -81,13 +81,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Compress-Archive -Path target/${{ matrix.target }}/release/r65.exe, README.md -DestinationPath dist/r65-${{ matrix.name }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/r65.exe, README.txt, LICENSE, docs/R65-Manual.pdf, docs/R65-Manual.hu.pdf -DestinationPath dist/r65-${{ matrix.name }}.zip
 
       - name: Package (macOS, Linux)
         if: runner.os != 'Windows'
         run: |
           mkdir dist
-          tar -czf dist/r65-${{ matrix.name }}.tar.gz -C target/${{ matrix.target }}/release r65 -C "$PWD" README.md
+          tar -czf dist/r65-${{ matrix.name }}.tar.gz -C target/${{ matrix.target }}/release r65 -C "$PWD" README.txt LICENSE -C "$PWD/docs" R65-Manual.pdf R65-Manual.hu.pdf
 
       - uses: actions/upload-artifact@v7
         with:

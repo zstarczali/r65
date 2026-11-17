@@ -51,7 +51,8 @@ sudo apt-get install libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 ## Automated builds
 
 GitHub Actions builds `.zip` packages for Windows and `.tar.gz` packages for macOS
-and Linux, each for x64 and arm64. The workflow only runs when started by hand,
+and Linux, each for x64 and arm64. Each package holds the program, `README.txt` (usage only),
+`LICENSE` and the two PDF manuals from `docs/`. The workflow only runs when started by hand,
 from the Actions page or with the command below, and keeps the packages as workflow
 artifacts:
 
